@@ -38,6 +38,24 @@
     }
     .avatar img { width:100%; height:100%; object-fit:cover; display:block; }
     .pill { display:inline-flex; gap:8px; align-items:center; padding:10px 14px; border-radius:999px; background:#1a2a41; font-weight:700; }
+    .timer-pill {
+      min-width: 136px;
+      justify-content: center;
+      font-size: 18px;
+      border: 2px solid rgba(255,214,95,.35);
+      box-shadow: 0 0 0 2px rgba(255,214,95,.12);
+    }
+    .timer-pill.warning {
+      background: linear-gradient(180deg, rgba(120,14,14,.95), rgba(64,8,8,.96));
+      border-color: rgba(255,110,110,.88);
+      box-shadow: 0 0 0 3px rgba(255,110,110,.2), 0 0 18px rgba(255,70,70,.25);
+    }
+    .timer-value {
+      font-size: clamp(26px, 4vw, 40px);
+      line-height: 1;
+      min-width: 34px;
+      text-align:center;
+    }
     .question {
       background: linear-gradient(180deg, #f7e6bf 0%, #f3dba9 100%);
       color:#16181f;
@@ -79,6 +97,8 @@
       gap: 16px;
     }
     .answer {
+      -webkit-appearance: none;
+      appearance: none;
       min-height: 110px;
       border-radius: 28px;
       border: 3px solid rgba(255,184,0,.48);
@@ -91,11 +111,18 @@
       font-size: clamp(20px, 2.6vw, 40px);
       font-weight: 900;
       cursor:pointer;
+      position: relative;
+      transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
     }
-    .answer.selected { box-shadow: 0 0 0 4px rgba(255,190,0,.24); transform: translateY(-1px); }
+    .answer.selected {
+      border-color: rgba(255,255,255,.96);
+      box-shadow: 0 0 0 4px rgba(255,255,255,.34), 0 0 22px rgba(255,255,255,.12);
+      transform: translateY(-1px);
+    }
     .answer.correct { border-color: rgba(115, 255, 170, .88); box-shadow: 0 0 0 4px rgba(115,255,170,.16); }
     .answer.incorrect { opacity: .72; }
-    .answer:disabled { opacity:.65; cursor:not-allowed; }
+    .answer:disabled { opacity:.8; cursor:not-allowed; }
+    .answer.selected:disabled { opacity: 1; }
     .badge {
       width:66px; height:66px; border-radius:999px; display:grid; place-items:center;
       background: radial-gradient(circle at 35% 30%, #ffbe5c, #ff7a00 56%, #ac2f00 100%);
@@ -130,7 +157,7 @@
       </div>
       <div class="pill">Score <strong id="playerScore">0</strong></div>
       <div class="pill">State <strong id="gameState">idle</strong></div>
-      <div class="pill">Time <strong id="timerText">--</strong></div>
+      <div id="timerPill" class="pill timer-pill">Time <strong id="timerText" class="timer-value">--</strong></div>
     </div>
     <div id="questionCategory" class="category"></div>
     <div id="questionText" class="question">Waiting for the host…</div>
@@ -218,9 +245,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ player_name: playerName, choice_index: choiceIndex }),
       });
-      if (!response.ok) {
-        return;
-      }
+      if (!response.ok) return;
       const payload = await response.json();
       render(payload.state);
     }
@@ -234,6 +259,7 @@
       const correctIndex = state.state === 'results' ? state.question?.correct_index : null;
       choices.forEach((choice, index) => {
         const button = document.createElement('button');
+        button.type = 'button';
         button.className = 'answer';
         if (selected === index) button.classList.add('selected');
         if (correctIndex === index) button.classList.add('correct');
@@ -278,15 +304,9 @@
 
     function render(state) {
       latestState = state;
-      if (!playerName) {
-        showJoin();
-        return;
-      }
+      if (!playerName) { showJoin(); return; }
       const joined = Array.isArray(state.players) && state.players.some((player) => (player.name || '').trim() === playerName);
-      if (!joined) {
-        showJoin('Join the room to keep playing.');
-        return;
-      }
+      if (!joined) { showJoin('Join the room to keep playing.'); return; }
       showBoard();
       const me = state.players.find((player) => (player.name || '').trim() === playerName) || { score: 0, picture: '' };
       renderAvatar(me);
@@ -302,14 +322,16 @@
 
     function updateTimer() {
       const timerText = document.getElementById('timerText');
+      const timerPill = document.getElementById('timerPill');
       if (!latestState?.timer_ends_at) {
-        timerText.textContent = latestState?.state === 'results'
-          ? (latestState?.last_result?.hold_for_manual_next ? 'Host next' : '--')
-          : '--';
+        timerText.textContent = latestState?.state === 'results' ? (latestState?.last_result?.hold_for_manual_next ? 'Host' : '--') : '--';
+        timerPill.classList.remove('warning');
         return;
       }
       const remaining = Math.max(0, Math.ceil(latestState.timer_ends_at - Date.now() / 1000));
       timerText.textContent = String(remaining);
+      if (remaining <= 10 && latestState?.state === 'submitting') timerPill.classList.add('warning');
+      else timerPill.classList.remove('warning');
     }
 
     function connectSocket() {
