@@ -41,6 +41,7 @@ _DEFAULT_AI_PROVIDER_PRESETS = {
 }
 _AGE_TO_DIFFICULTY = {"child": "easy", "teen": "medium", "adult": "hard"}
 _DEFAULT_TTS_AGENT_STYLE = "Energetic trivia host. Keep it short, exciting, and family friendly. Do not change facts, names, answers, or winners."
+_DEFAULT_NO_TTS_RESULT_DELAY_SECONDS = 5
 
 
 class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -539,7 +540,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return 0.0
         spoken_message = await self._async_prepare_spoken_text(str(message).strip())
         estimated_seconds = (len(str(spoken_message).split()) / max(80, int(self.tts_config.get("speech_rate_wpm", 155)))) * 60.0
-        estimated_seconds = max(0.0, min(20.0, estimated_seconds))
+        estimated_seconds = max(0.0, min(20.0, estimated_seconds + 0.75))
         services = getattr(self.hass, "services", None)
         if services and hasattr(services, "async_call"):
             payload = {
@@ -627,11 +628,11 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.last_result = {}
         self.timer_ends_at = None
         await self.async_save()
+        question_delay = 0.0
         if self.tts_config.get("enabled") and self.tts_config.get("announce_question", True):
-            message = self._question_announcement(self.question)
-            delay = await self.async_speak_text(message)
-            if self.tts_config.get("start_timer_after_tts", True) and delay > 0:
-                await asyncio.sleep(delay)
+            question_delay = await self.async_speak_text(self._question_announcement(self.question))
+        if self.tts_config.get("start_timer_after_tts", True) and question_delay > 0:
+            await asyncio.sleep(question_delay)
         self.timer_ends_at = time.time() + max(3, int(self.answer_seconds))
         await self.async_save()
 
@@ -668,7 +669,6 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 correct_players.append(name)
             results.append({"player": name, "answer_index": answer_index, "answer": answer_text, "correct": is_correct})
         self.state = "results"
-        self.timer_ends_at = time.time() + max(1, int(self.reveal_seconds))
         self.last_result = {
             "correct_players": correct_players,
             "correct_answer": self.question.get("correct_answer"),
@@ -676,9 +676,16 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "results": results,
             "hold_for_manual_next": False,
         }
-        await self.async_save()
+
+        result_delay = float(self.reveal_seconds)
         if self.tts_config.get("enabled") and self.tts_config.get("announce_result", True):
-            await self.async_speak_text(self._result_announcement(self.last_result))
+            spoken_delay = await self.async_speak_text(self._result_announcement(self.last_result))
+            result_delay = max(result_delay, spoken_delay)
+        else:
+            result_delay = max(result_delay, float(_DEFAULT_NO_TTS_RESULT_DELAY_SECONDS))
+
+        self.timer_ends_at = time.time() + max(1.0, result_delay)
+        await self.async_save()
 
     async def async_reset_scores(self) -> None:
         for player in self.players:
@@ -692,6 +699,19 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.current_answers = {}
         self.timer_ends_at = None
         self.last_result = {}
+        await self.async_save()
+
+    async def async_advance_after_results(self) -> None:
+        self._cancel_round_task()
+        self.current_answers = {}
+        self.timer_ends_at = None
+        self.last_result = {}
+        if self.question_queue:
+            self.question = dict(self.question_queue.pop(0))
+            await self.async_start_round()
+            return
+        self.state = "idle"
+        self.question = {}
         await self.async_save()
 
     def _find_player(self, name: str) -> dict[str, Any] | None:
@@ -710,11 +730,11 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _sync_round_task(self) -> None:
         self._cancel_round_task()
         if self.state == "submitting" and self.timer_ends_at:
-            self._round_task = self.hass.async_create_task(self._async_wait_for_timeout(self.round_number, self.timer_ends_at))
-        elif self.state == "results" and self.auto_next and self.reveal_seconds > 0 and not bool(self.last_result.get("hold_for_manual_next")):
-            self._round_task = self.hass.async_create_task(self._async_wait_for_next_round(self.round_number, self.reveal_seconds))
+            self._round_task = self.hass.async_create_task(self._async_wait_for_answer_timeout(self.round_number, self.timer_ends_at))
+        elif self.state == "results" and self.auto_next and self.timer_ends_at and not bool(self.last_result.get("hold_for_manual_next")):
+            self._round_task = self.hass.async_create_task(self._async_wait_for_result_timeout(self.round_number, self.timer_ends_at))
 
-    async def _async_wait_for_timeout(self, round_number: int, timer_ends_at: float) -> None:
+    async def _async_wait_for_answer_timeout(self, round_number: int, timer_ends_at: float) -> None:
         try:
             await asyncio.sleep(max(0.0, timer_ends_at - time.time()))
             if self.state == "submitting" and self.round_number == round_number:
@@ -725,14 +745,11 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if asyncio.current_task() is self._round_task:
                 self._round_task = None
 
-    async def _async_wait_for_next_round(self, round_number: int, seconds: int) -> None:
+    async def _async_wait_for_result_timeout(self, round_number: int, timer_ends_at: float) -> None:
         try:
-            await asyncio.sleep(max(0, int(seconds)))
+            await asyncio.sleep(max(0.0, timer_ends_at - time.time()))
             if self.state == "results" and self.round_number == round_number and not bool(self.last_result.get("hold_for_manual_next")):
-                if self.question_queue:
-                    await self.async_next_question()
-                else:
-                    await self.async_clear_round()
+                await self.async_advance_after_results()
         except asyncio.CancelledError:
             raise
         finally:
@@ -752,7 +769,14 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         correct_index = int(payload.get("correct_index", 0))
         if correct_index < 0 or correct_index >= len(choices):
             raise ValueError("Correct answer is out of range")
-        return {"question": question_text, "choices": choices, "correct_index": correct_index, "correct_answer": choices[correct_index], "category": str(payload.get("category") or "").strip(), "explanation": str(payload.get("explanation") or "").strip()}
+        return {
+            "question": question_text,
+            "choices": choices,
+            "correct_index": correct_index,
+            "correct_answer": choices[correct_index],
+            "category": str(payload.get("category") or "").strip(),
+            "explanation": str(payload.get("explanation") or "").strip(),
+        }
 
     def _question_announcement(self, question: dict[str, Any]) -> str:
         choices = [str(choice).strip() for choice in question.get("choices", []) if str(choice).strip()]
