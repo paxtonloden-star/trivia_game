@@ -61,7 +61,17 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.timer_ends_at: float | None = None
         self.round_number = 0
         self.last_result: dict[str, Any] = {}
-        self.tts_config: dict[str, Any] = {"enabled": False, "provider_entity": "", "speaker_targets": [], "language": "en-US", "voice": "", "announce_question": True, "announce_result": True, "start_timer_after_tts": True, "speech_rate_wpm": 155}
+        self.tts_config: dict[str, Any] = {
+            "enabled": False,
+            "provider_entity": "",
+            "speaker_targets": [],
+            "language": "en-US",
+            "voice": "",
+            "announce_question": True,
+            "announce_result": True,
+            "start_timer_after_tts": True,
+            "speech_rate_wpm": 155,
+        }
         self.ai_config: dict[str, Any] = {
             "provider": "openai",
             "endpoint": _DEFAULT_AI_PROVIDER_PRESETS["openai"]["endpoint"],
@@ -70,6 +80,9 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "default_categories": ["science"],
             "default_age_range": "teen",
             "default_question_count": 10,
+            "include_pack_categories": True,
+            "generation_in_progress": False,
+            "last_error": None,
             "last_generation": None,
         }
         self._sockets: set[web.WebSocketResponse] = set()
@@ -164,10 +177,13 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "default_categories": list(self.ai_config.get("default_categories", [])),
                 "default_age_range": self.ai_config.get("default_age_range", "teen"),
                 "default_question_count": int(self.ai_config.get("default_question_count", 10)),
+                "include_pack_categories": bool(self.ai_config.get("include_pack_categories", True)),
+                "generation_in_progress": bool(self.ai_config.get("generation_in_progress", False)),
+                "last_error": self.ai_config.get("last_error"),
                 "last_generation": self.ai_config.get("last_generation"),
                 "has_api_key": bool(self.ai_config.get("api_key")),
                 "provider_options": self._ai_provider_options(),
-                "category_options": list(_DEFAULT_AI_CATEGORIES),
+                "category_options": self._available_ai_categories(),
                 "age_options": list(_AGE_TO_DIFFICULTY.keys()),
             },
         }
@@ -243,7 +259,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.tts_config["speech_rate_wpm"] = max(80, min(260, int(speech_rate_wpm)))
         await self.async_save()
 
-    async def async_set_ai_settings(self, *, provider: str | None = None, endpoint: str | None = None, model: str | None = None, api_key: str | None = None, default_categories: list[str] | None = None, default_age_range: str | None = None, default_question_count: int | None = None) -> None:
+    async def async_set_ai_settings(self, *, provider: str | None = None, endpoint: str | None = None, model: str | None = None, api_key: str | None = None, default_categories: list[str] | None = None, default_age_range: str | None = None, default_question_count: int | None = None, include_pack_categories: bool | None = None) -> None:
         current_provider = str(self.ai_config.get("provider") or "openai").strip().lower()
         new_provider = current_provider
         if provider is not None:
@@ -266,6 +282,8 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.ai_config["default_age_range"] = clean_age if clean_age in _AGE_TO_DIFFICULTY else "teen"
         if default_question_count is not None:
             self.ai_config["default_question_count"] = max(1, min(100, int(default_question_count)))
+        if include_pack_categories is not None:
+            self.ai_config["include_pack_categories"] = bool(include_pack_categories)
         await self.async_save()
 
     async def async_generate_ai_pack(self, *, name: str, categories: list[str], age_range: str, question_count: int, queue_after_generate: bool = False) -> dict[str, Any]:
@@ -278,22 +296,31 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         difficulty = _AGE_TO_DIFFICULTY[clean_age]
         total = max(1, min(100, int(question_count or self.ai_config.get("default_question_count", 10))))
         category_plan = [random.choice(clean_categories) for _ in range(total)]
-        questions = await self._async_generate_questions_via_openai_compatible(category_plan=category_plan, age_range=clean_age, difficulty=difficulty)
-        if len(questions) < 1:
-            raise ValueError("AI did not return any usable questions")
-        slug = self._slugify(name or f"ai_{'_'.join(clean_categories)}_{clean_age}")
-        pack_name = str(name or slug.replace("_", " ").title()).strip()
-        normalized_questions = [self._normalize_question(item) for item in questions if self._is_question_like(item)]
-        if not normalized_questions:
-            raise ValueError("AI returned no valid questions")
-        self.custom_packs[slug] = {"slug": slug, "name": pack_name, "description": f"AI-generated pack for {', '.join(clean_categories)} ({clean_age})", "questions": normalized_questions}
-        self.ai_config["last_generation"] = {"pack_slug": slug, "pack_name": pack_name, "categories": clean_categories, "age_range": clean_age, "difficulty": difficulty, "question_count": len(normalized_questions), "generated_at": int(time.time())}
-        if queue_after_generate:
-            self.question_queue.extend([dict(item) for item in normalized_questions])
-            if not self.question.get("question") and self.question_queue:
-                self.question = dict(self.question_queue.pop(0))
+        self.ai_config["generation_in_progress"] = True
+        self.ai_config["last_error"] = None
         await self.async_save()
-        return {"slug": slug, "name": pack_name, "question_count": len(normalized_questions)}
+        try:
+            questions = await self._async_generate_questions_via_openai_compatible(category_plan=category_plan, age_range=clean_age, difficulty=difficulty)
+            if len(questions) < 1:
+                raise ValueError("AI did not return any usable questions")
+            slug = self._slugify(name or f"ai_{'_'.join(clean_categories)}_{clean_age}")
+            pack_name = str(name or slug.replace("_", " ").title()).strip()
+            normalized_questions = [self._normalize_question(item) for item in questions if self._is_question_like(item)]
+            if not normalized_questions:
+                raise ValueError("AI returned no valid questions")
+            self.custom_packs[slug] = {"slug": slug, "name": pack_name, "description": f"AI-generated pack for {', '.join(clean_categories)} ({clean_age})", "questions": normalized_questions}
+            self.ai_config["last_generation"] = {"pack_slug": slug, "pack_name": pack_name, "categories": clean_categories, "age_range": clean_age, "difficulty": difficulty, "question_count": len(normalized_questions), "generated_at": int(time.time())}
+            if queue_after_generate:
+                self.question_queue.extend([dict(item) for item in normalized_questions])
+                if not self.question.get("question") and self.question_queue:
+                    self.question = dict(self.question_queue.pop(0))
+            return {"slug": slug, "name": pack_name, "question_count": len(normalized_questions)}
+        except Exception as err:
+            self.ai_config["last_error"] = str(err)
+            raise
+        finally:
+            self.ai_config["generation_in_progress"] = False
+            await self.async_save()
 
     async def _async_generate_questions_via_openai_compatible(self, *, category_plan: list[str], age_range: str, difficulty: str) -> list[dict[str, Any]]:
         endpoint = str(self.ai_config.get("endpoint") or "").rstrip("/")
@@ -356,6 +383,22 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if value and value not in cleaned:
                 cleaned.append(value)
         return cleaned
+
+    def _available_ai_categories(self) -> list[str]:
+        categories = list(_DEFAULT_AI_CATEGORIES)
+        if self.ai_config.get("include_pack_categories", True):
+            discovered: list[str] = []
+            for slug, pack in self.custom_packs.items():
+                if slug not in discovered:
+                    discovered.append(slug)
+                for item in pack.get("questions", []):
+                    category = str(item.get("category") or "").strip().lower()
+                    if category and category not in discovered:
+                        discovered.append(category)
+            for item in discovered:
+                if item not in categories:
+                    categories.append(item)
+        return sorted(categories)
 
     def _ai_provider_options(self) -> list[dict[str, str]]:
         return [{"value": key, "label": value["label"]} for key, value in _DEFAULT_AI_PROVIDER_PRESETS.items()]
