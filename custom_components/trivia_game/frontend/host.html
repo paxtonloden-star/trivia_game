@@ -23,6 +23,8 @@
     th, td { text-align:left; padding:10px 8px; border-bottom:1px solid #21324c; }
     h1, h2, h3 { margin-top:0; }
     .join-url { word-break:break-all; }
+    .queue-list { margin:0; padding-left:18px; }
+    .queue-list li { margin:6px 0; }
   </style>
 </head>
 <body>
@@ -33,6 +35,7 @@
         <div><div class="pill">Join code <strong id="joinCode">------</strong></div></div>
         <div><div class="pill">State <strong id="gameState">idle</strong></div></div>
         <div><div class="pill">Round <strong id="roundNumber">0</strong></div></div>
+        <div><div class="pill">Queue <strong id="queueCount">0</strong></div></div>
       </div>
       <p class="join-url muted" id="joinUrl"></p>
       <p class="muted" id="notice"></p>
@@ -61,11 +64,35 @@
         <label style="grid-column:1 / -1;">Explanation<textarea id="explanation" placeholder="Optional explanation shown after the round..."></textarea></label>
       </div>
       <div class="actions" style="margin-top:12px;">
-        <button id="saveQuestion">Save question</button>
+        <button id="saveQuestion">Save as current</button>
+        <button id="queueQuestion">Add to queue</button>
         <button id="startRound" class="primary">Start round</button>
+        <button id="nextQuestion">Next queued question</button>
         <button id="gradeNow">Reveal now</button>
         <button id="clearRound">Clear round</button>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>Pack import</h2>
+      <p class="muted">Paste a JSON pack with <code>name</code>, optional <code>description</code>, and a <code>questions</code> array.</p>
+      <textarea id="packJson" placeholder='{"name":"Space Pack","questions":[{"question":"...","choices":["A","B"],"correct_index":0}]}'></textarea>
+      <div class="actions" style="margin-top:12px;">
+        <button id="importPack">Import pack</button>
+      </div>
+      <div class="grid" style="margin-top:16px;">
+        <label>Available packs<select id="packSelect"></select></label>
+        <label>Questions to queue<input id="packCount" type="number" min="1" value="10"></label>
+        <label>Replace queue<select id="replaceQueue"><option value="false">Append</option><option value="true">Replace queue</option></select></label>
+      </div>
+      <div class="actions" style="margin-top:12px;">
+        <button id="loadPackToQueue">Load pack into queue</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Queued questions</h2>
+      <ol id="queueList" class="queue-list"></ol>
     </div>
 
     <div class="card">
@@ -115,11 +142,47 @@
       window.setTimeout(() => setNotice(''), 1500);
     }
 
+    function renderPackOptions(state) {
+      const select = document.getElementById('packSelect');
+      const packs = Array.isArray(state.custom_packs) ? state.custom_packs : [];
+      const current = select.value;
+      select.innerHTML = '';
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = packs.length ? 'Choose a pack...' : 'No packs imported';
+      select.appendChild(blank);
+      for (const pack of packs) {
+        const option = document.createElement('option');
+        option.value = pack.slug || '';
+        option.textContent = `${pack.name || pack.slug} (${pack.question_count || 0})`;
+        select.appendChild(option);
+      }
+      if (packs.some((pack) => pack.slug === current)) select.value = current;
+    }
+
+    function renderQueue(state) {
+      const queueList = document.getElementById('queueList');
+      queueList.innerHTML = '';
+      const queue = Array.isArray(state.question_queue) ? state.question_queue : [];
+      if (!queue.length) {
+        const li = document.createElement('li');
+        li.textContent = 'No queued questions.';
+        queueList.appendChild(li);
+        return;
+      }
+      for (const item of queue) {
+        const li = document.createElement('li');
+        li.textContent = `${item.question || 'Untitled question'}${item.category ? ` — ${item.category}` : ''}`;
+        queueList.appendChild(li);
+      }
+    }
+
     function render(state) {
       latestState = state;
       document.getElementById('joinCode').textContent = state.join_code || '------';
       document.getElementById('gameState').textContent = state.state || 'idle';
       document.getElementById('roundNumber').textContent = String(state.round_number || 0);
+      document.getElementById('queueCount').textContent = String(state.queue_count || 0);
       document.getElementById('joinUrl').textContent = state.join_url || '';
       document.getElementById('answerSeconds').value = state.answer_seconds ?? 20;
       document.getElementById('revealSeconds').value = state.reveal_seconds ?? 5;
@@ -132,6 +195,9 @@
       document.getElementById('correctIndex').value = String(q.correct_index ?? 0);
       document.getElementById('category').value = q.category || '';
       document.getElementById('explanation').value = q.explanation || '';
+
+      renderPackOptions(state);
+      renderQueue(state);
 
       const tbody = document.getElementById('playersBody');
       tbody.innerHTML = '';
@@ -164,6 +230,16 @@
       socket.onclose = () => window.setTimeout(connectSocket, 1500);
     }
 
+    function currentQuestionPayload() {
+      return {
+        question: document.getElementById('questionText').value,
+        choices: [0,1,2,3].map((idx) => document.getElementById(`choice${idx}`).value),
+        correct_index: parseInt(document.getElementById('correctIndex').value || '0', 10),
+        category: document.getElementById('category').value,
+        explanation: document.getElementById('explanation').value,
+      };
+    }
+
     document.getElementById('saveSettings').addEventListener('click', async () => {
       try {
         await hostAction('set_settings', {
@@ -175,19 +251,35 @@
     });
 
     document.getElementById('saveQuestion').addEventListener('click', async () => {
+      try { await hostAction('set_question', currentQuestionPayload()); } catch (err) { setNotice(err.message); }
+    });
+
+    document.getElementById('queueQuestion').addEventListener('click', async () => {
+      try { await hostAction('queue_question', currentQuestionPayload()); } catch (err) { setNotice(err.message); }
+    });
+
+    document.getElementById('importPack').addEventListener('click', async () => {
       try {
-        await hostAction('set_question', {
-          question: document.getElementById('questionText').value,
-          choices: [0,1,2,3].map((idx) => document.getElementById(`choice${idx}`).value),
-          correct_index: parseInt(document.getElementById('correctIndex').value || '0', 10),
-          category: document.getElementById('category').value,
-          explanation: document.getElementById('explanation').value,
+        const payload = JSON.parse(document.getElementById('packJson').value || '{}');
+        await hostAction('import_pack', payload);
+      } catch (err) { setNotice(err.message); }
+    });
+
+    document.getElementById('loadPackToQueue').addEventListener('click', async () => {
+      try {
+        await hostAction('load_pack_to_queue', {
+          slug: document.getElementById('packSelect').value,
+          count: parseInt(document.getElementById('packCount').value || '10', 10),
+          replace_queue: document.getElementById('replaceQueue').value === 'true',
         });
       } catch (err) { setNotice(err.message); }
     });
 
     document.getElementById('startRound').addEventListener('click', async () => {
       try { await hostAction('start_round'); } catch (err) { setNotice(err.message); }
+    });
+    document.getElementById('nextQuestion').addEventListener('click', async () => {
+      try { await hostAction('next_question'); } catch (err) { setNotice(err.message); }
     });
     document.getElementById('gradeNow').addEventListener('click', async () => {
       try { await hostAction('grade_round'); } catch (err) { setNotice(err.message); }
