@@ -71,6 +71,8 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "announce_result": True,
             "start_timer_after_tts": True,
             "speech_rate_wpm": 155,
+            "use_conversation_agent": False,
+            "conversation_agent_id": "",
         }
         self.ai_config: dict[str, Any] = {
             "provider": "openai",
@@ -245,7 +247,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.auto_next = bool(auto_next)
         await self.async_save()
 
-    async def async_set_tts_settings(self, *, enabled: bool | None = None, provider_entity: str | None = None, speaker_targets: list[str] | None = None, language: str | None = None, voice: str | None = None, announce_question: bool | None = None, announce_result: bool | None = None, start_timer_after_tts: bool | None = None, speech_rate_wpm: int | None = None) -> None:
+    async def async_set_tts_settings(self, *, enabled: bool | None = None, provider_entity: str | None = None, speaker_targets: list[str] | None = None, language: str | None = None, voice: str | None = None, announce_question: bool | None = None, announce_result: bool | None = None, start_timer_after_tts: bool | None = None, speech_rate_wpm: int | None = None, use_conversation_agent: bool | None = None, conversation_agent_id: str | None = None) -> None:
         if enabled is not None:
             self.tts_config["enabled"] = bool(enabled)
         if provider_entity is not None:
@@ -264,6 +266,10 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.tts_config["start_timer_after_tts"] = bool(start_timer_after_tts)
         if speech_rate_wpm is not None:
             self.tts_config["speech_rate_wpm"] = max(80, min(260, int(speech_rate_wpm)))
+        if use_conversation_agent is not None:
+            self.tts_config["use_conversation_agent"] = bool(use_conversation_agent)
+        if conversation_agent_id is not None:
+            self.tts_config["conversation_agent_id"] = str(conversation_agent_id).strip()
         await self.async_save()
 
     async def async_set_ai_settings(self, *, provider: str | None = None, endpoint: str | None = None, model: str | None = None, api_key: str | None = None, default_categories: list[str] | None = None, default_age_range: str | None = None, default_question_count: int | None = None, include_pack_categories: bool | None = None) -> None:
@@ -393,6 +399,38 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         questions = parsed.get("questions", []) if isinstance(parsed, dict) else []
         return [{"question": str(item.get("question") or "").strip(), "choices": [str(choice).strip() for choice in item.get("choices", []) if str(choice).strip()], "correct_index": int(item.get("correct_index", 0)), "category": str(item.get("category") or "").strip(), "explanation": str(item.get("explanation") or "").strip()} for item in questions if isinstance(item, dict)]
 
+    async def _async_prepare_spoken_text(self, message: str) -> str:
+        if not self.tts_config.get("use_conversation_agent"):
+            return message
+        agent_id = str(self.tts_config.get("conversation_agent_id") or "").strip()
+        if not agent_id:
+            return message
+        services = getattr(self.hass, "services", None)
+        if not services or not hasattr(services, "async_call"):
+            return message
+        prompt = (
+            "Rewrite this as a short, energetic trivia host line. Keep facts unchanged, keep names unchanged, do not add extra information, and return only the line to be spoken: "
+            f"{message}"
+        )
+        try:
+            response = await services.async_call(
+                "conversation",
+                "process",
+                {
+                    "text": prompt,
+                    "language": self.tts_config.get("language") or "en-US",
+                    "agent_id": agent_id,
+                },
+                blocking=True,
+                return_response=True,
+            )
+            speech = (((response or {}).get("response") or {}).get("speech") or {})
+            plain = ((speech.get("plain") or {}).get("speech") or "").strip()
+            ssml = ((speech.get("ssml") or {}).get("speech") or "").strip()
+            return plain or ssml or message
+        except Exception:
+            return message
+
     def _build_ai_generation_prompt(self, *, category_plan: list[str], age_range: str, difficulty: str) -> str:
         plan_lines = [f"{index + 1}. {category}" for index, category in enumerate(category_plan)]
         return (
@@ -471,6 +509,21 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         speakers.sort(key=lambda item: item["name"].lower())
         return speakers
 
+    async def async_available_conversation_agents(self) -> list[dict[str, str]]:
+        agents: list[dict[str, str]] = []
+        try:
+            for state in self.hass.states.async_all():
+                entity_id = str(getattr(state, "entity_id", "") or "")
+                if entity_id.startswith("conversation."):
+                    agents.append({"entity_id": entity_id, "name": state.attributes.get("friendly_name", entity_id)})
+        except Exception:
+            agents = []
+        current = str(self.tts_config.get("conversation_agent_id") or "").strip()
+        if current and not any(item["entity_id"] == current for item in agents):
+            agents.append({"entity_id": current, "name": f"{current} (current)"})
+        agents.sort(key=lambda item: item["name"].lower())
+        return agents
+
     async def async_speak_text(self, message: str) -> float:
         if not self.tts_config.get("enabled"):
             return 0.0
@@ -478,14 +531,15 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         speaker_targets = [str(item).strip() for item in self.tts_config.get("speaker_targets", []) if str(item).strip()]
         if not provider_entity or not speaker_targets or not str(message or "").strip():
             return 0.0
-        estimated_seconds = (len(str(message).split()) / max(80, int(self.tts_config.get("speech_rate_wpm", 155)))) * 60.0
+        spoken_message = await self._async_prepare_spoken_text(str(message).strip())
+        estimated_seconds = (len(str(spoken_message).split()) / max(80, int(self.tts_config.get("speech_rate_wpm", 155)))) * 60.0
         estimated_seconds = max(0.0, min(20.0, estimated_seconds))
         services = getattr(self.hass, "services", None)
         if services and hasattr(services, "async_call"):
             payload = {
                 "entity_id": provider_entity,
                 "media_player_entity_id": speaker_targets if len(speaker_targets) > 1 else speaker_targets[0],
-                "message": message,
+                "message": spoken_message,
                 "language": self.tts_config.get("language") or "en-US",
             }
             voice = str(self.tts_config.get("voice") or "").strip()
