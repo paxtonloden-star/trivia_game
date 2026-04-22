@@ -117,6 +117,7 @@ class TriviaHostActionView(BaseTriviaView):
                 answer_seconds=payload.get("answer_seconds"),
                 reveal_seconds=payload.get("reveal_seconds"),
                 auto_next=payload.get("auto_next"),
+                max_rounds=payload.get("max_rounds"),
             )
         elif action == "set_tts_settings":
             await self.coordinator.async_set_tts_settings(
@@ -127,6 +128,7 @@ class TriviaHostActionView(BaseTriviaView):
                 voice=payload.get("voice"),
                 announce_question=payload.get("announce_question"),
                 announce_result=payload.get("announce_result"),
+                announce_scores=payload.get("announce_scores"),
                 start_timer_after_tts=payload.get("start_timer_after_tts"),
                 speech_rate_wpm=payload.get("speech_rate_wpm"),
                 use_conversation_agent=payload.get("use_conversation_agent"),
@@ -148,6 +150,16 @@ class TriviaHostActionView(BaseTriviaView):
             await self.coordinator.async_add_custom_category(str(payload.get("category") or "").strip())
         elif action == "remove_custom_category":
             await self.coordinator.async_remove_custom_category(str(payload.get("category") or "").strip())
+        elif action == "start_game":
+            await self.coordinator.async_start_game()
+        elif action == "pause_game":
+            await self.coordinator.async_pause_game()
+        elif action == "resume_game":
+            await self.coordinator.async_resume_game()
+        elif action == "end_game":
+            await self.coordinator.async_end_game()
+        elif action == "reset_game":
+            await self.coordinator.async_reset_game()
         elif action == "test_ai_connection":
             await self.coordinator.async_test_ai_connection()
         elif action == "generate_ai_pack":
