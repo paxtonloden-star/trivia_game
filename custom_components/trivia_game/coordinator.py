@@ -196,9 +196,10 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @property
     def join_url(self) -> str:
+        local_path = f"/api/{DOMAIN}/static/player.html?join={self.join_code}"
         if not self.base_url:
-            return f"/local/{DOMAIN}/player.html?join={self.join_code}"
-        return f"{self.base_url}/local/{DOMAIN}/player.html?join={self.join_code}"
+            return local_path
+        return f"{self.base_url}{local_path}"
 
     async def async_register_socket(self, ws: web.WebSocketResponse) -> None:
         self._sockets.add(ws)
