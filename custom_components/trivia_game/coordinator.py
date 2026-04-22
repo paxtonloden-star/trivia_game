@@ -39,6 +39,8 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.join_code = self._generate_join_code()
         self.players: list[dict[str, Any]] = []
         self.question: dict[str, Any] = {}
+        self.question_queue: list[dict[str, Any]] = []
+        self.custom_packs: dict[str, dict[str, Any]] = {}
         self.answer_seconds = DEFAULT_ANSWER_SECONDS
         self.reveal_seconds = DEFAULT_REVEAL_SECONDS
         self.auto_next = DEFAULT_AUTO_NEXT
@@ -57,6 +59,18 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.join_code = saved.get("join_code") or self._generate_join_code()
         self.players = list(saved.get("players", []))
         self.question = dict(saved.get("question", {}))
+        self.question_queue = [dict(item) for item in saved.get("question_queue", []) if isinstance(item, dict)]
+        saved_packs = dict(saved.get("custom_packs", {}))
+        self.custom_packs = {
+            str(slug): {
+                "slug": str(pack.get("slug") or slug),
+                "name": str(pack.get("name") or slug),
+                "description": str(pack.get("description") or ""),
+                "questions": [self._normalize_question(item) for item in pack.get("questions", []) if self._is_question_like(item)],
+            }
+            for slug, pack in saved_packs.items()
+            if isinstance(pack, dict)
+        }
         self.answer_seconds = int(saved.get("answer_seconds", DEFAULT_ANSWER_SECONDS))
         self.reveal_seconds = int(saved.get("reveal_seconds", DEFAULT_REVEAL_SECONDS))
         self.auto_next = bool(saved.get("auto_next", DEFAULT_AUTO_NEXT))
@@ -84,6 +98,8 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "join_code": self.join_code,
                 "players": self.players,
                 "question": self.question,
+                "question_queue": self.question_queue,
+                "custom_packs": self.custom_packs,
                 "answer_seconds": self.answer_seconds,
                 "reveal_seconds": self.reveal_seconds,
                 "auto_next": self.auto_next,
@@ -104,6 +120,9 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "qr_url": f"/api/{DOMAIN}/join_qr.svg",
             "players": self.players,
             "question": self.question,
+            "question_queue": self.question_queue,
+            "queue_count": len(self.question_queue),
+            "custom_packs": self._pack_summaries(),
             "answer_seconds": self.answer_seconds,
             "reveal_seconds": self.reveal_seconds,
             "auto_next": self.auto_next,
@@ -167,29 +186,70 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_save()
 
     async def async_set_question(self, payload: dict[str, Any]) -> None:
-        question_text = str(payload.get("question") or "").strip()
-        choices = [str(choice).strip() for choice in payload.get("choices", []) if str(choice).strip()]
-        if not question_text:
-            raise ValueError("Question text is required")
-        if len(choices) < 2:
-            raise ValueError("At least two answers are required")
-        correct_index = int(payload.get("correct_index", 0))
-        if correct_index < 0 or correct_index >= len(choices):
-            raise ValueError("Correct answer is out of range")
-        self.question = {
-            "question": question_text,
-            "choices": choices,
-            "correct_index": correct_index,
-            "correct_answer": choices[correct_index],
-            "category": str(payload.get("category") or "").strip(),
-            "explanation": str(payload.get("explanation") or "").strip(),
-        }
+        self.question = self._normalize_question(payload)
         self.last_result = {}
+        await self.async_save()
+
+    async def async_import_pack(self, payload: dict[str, Any]) -> dict[str, Any]:
+        slug = self._slugify(str(payload.get("slug") or payload.get("name") or "").strip())
+        if not slug:
+            raise ValueError("Pack name is required")
+        name = str(payload.get("name") or slug.replace("_", " ").title()).strip()
+        description = str(payload.get("description") or "").strip()
+        questions = [
+            self._normalize_question(item)
+            for item in payload.get("questions", [])
+            if self._is_question_like(item)
+        ]
+        if not questions:
+            raise ValueError("Pack must contain at least one valid question")
+        self.custom_packs[slug] = {
+            "slug": slug,
+            "name": name,
+            "description": description,
+            "questions": questions,
+        }
+        await self.async_save()
+        return {"slug": slug, "name": name, "description": description, "question_count": len(questions)}
+
+    async def async_load_pack_to_queue(self, slug: str, count: int | None = None, replace_queue: bool = False) -> None:
+        clean_slug = self._slugify(slug)
+        pack = self.custom_packs.get(clean_slug)
+        if not pack:
+            raise ValueError("Unknown pack")
+        questions = [dict(item) for item in pack.get("questions", [])]
+        limit = max(1, int(count or len(questions)))
+        batch = questions[:limit]
+        if replace_queue:
+            self.question_queue = batch
+        else:
+            self.question_queue.extend(batch)
+        if not self.question.get("question") and self.question_queue:
+            self.question = dict(self.question_queue.pop(0))
+        await self.async_save()
+
+    async def async_queue_question(self, payload: dict[str, Any]) -> None:
+        self.question_queue.append(self._normalize_question(payload))
+        await self.async_save()
+
+    async def async_next_question(self) -> None:
+        self._cancel_round_task()
+        self.state = "idle"
+        self.current_answers = {}
+        self.timer_ends_at = None
+        self.last_result = {}
+        if self.question_queue:
+            self.question = dict(self.question_queue.pop(0))
+        else:
+            self.question = {}
         await self.async_save()
 
     async def async_start_round(self) -> None:
         if not self.question.get("question"):
-            raise ValueError("Set a question first")
+            if self.question_queue:
+                self.question = dict(self.question_queue.pop(0))
+            else:
+                raise ValueError("Set or queue a question first")
         self.state = "submitting"
         self.round_number += 1
         self.current_answers = {}
@@ -299,12 +359,55 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             await asyncio.sleep(max(0, int(seconds)))
             if self.state == "results" and self.round_number == round_number and not bool(self.last_result.get("hold_for_manual_next")):
-                await self.async_clear_round()
+                if self.question_queue:
+                    await self.async_next_question()
+                else:
+                    await self.async_clear_round()
         except asyncio.CancelledError:
             raise
         finally:
             if asyncio.current_task() is self._round_task:
                 self._round_task = None
+
+    def _is_question_like(self, value: Any) -> bool:
+        return isinstance(value, dict) and bool(str(value.get("question") or "").strip())
+
+    def _normalize_question(self, payload: dict[str, Any]) -> dict[str, Any]:
+        question_text = str(payload.get("question") or "").strip()
+        choices = [str(choice).strip() for choice in payload.get("choices", []) if str(choice).strip()]
+        if not question_text:
+            raise ValueError("Question text is required")
+        if len(choices) < 2:
+            raise ValueError("At least two answers are required")
+        correct_index = int(payload.get("correct_index", 0))
+        if correct_index < 0 or correct_index >= len(choices):
+            raise ValueError("Correct answer is out of range")
+        return {
+            "question": question_text,
+            "choices": choices,
+            "correct_index": correct_index,
+            "correct_answer": choices[correct_index],
+            "category": str(payload.get("category") or "").strip(),
+            "explanation": str(payload.get("explanation") or "").strip(),
+        }
+
+    def _slugify(self, value: str) -> str:
+        clean = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "").strip())
+        while "__" in clean:
+            clean = clean.replace("__", "_")
+        return clean.strip("_")[:64]
+
+    def _pack_summaries(self) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for slug, pack in self.custom_packs.items():
+            summaries.append({
+                "slug": slug,
+                "name": str(pack.get("name") or slug),
+                "description": str(pack.get("description") or ""),
+                "question_count": len(pack.get("questions", [])),
+            })
+        summaries.sort(key=lambda item: item["name"].lower())
+        return summaries
 
     def _generate_join_code(self) -> str:
         return "".join(secrets.choice(_ALPHABET) for _ in range(6))
