@@ -94,6 +94,7 @@
         <label>Start timer after TTS<select id="startAfterTts"><option value="true">Yes</option><option value="false">No</option></select></label>
         <label>Use conversation agent<select id="useConversationAgent"><option value="false">No</option><option value="true">Yes</option></select></label>
         <label>Conversation agent<select id="conversationAgent"></select></label>
+        <label style="grid-column:1 / -1;">Conversation style prompt<textarea id="conversationStylePrompt" placeholder="Energetic trivia host. Keep it short, exciting, and family friendly."></textarea><div class="helper">This guides how the selected conversation agent rewrites the spoken line before TTS.</div></label>
       </div>
       <div class="helper">When enabled, the selected conversation agent rewrites the spoken line before it is sent to TTS.</div>
       <div class="actions" style="margin-top:12px;"><button id="saveTts">Save TTS settings</button></div>
@@ -240,6 +241,7 @@
       safeSetValue('startAfterTts', String(tts.start_timer_after_tts !== false));
       safeSetValue('useConversationAgent', String(Boolean(tts.use_conversation_agent)));
       safeSetValue('conversationAgent', tts.conversation_agent_id || '');
+      safeSetValue('conversationStylePrompt', tts.conversation_style_prompt || '');
     }
 
     function renderAiControls(ai) {
@@ -305,7 +307,7 @@
       return { question: document.getElementById('questionText').value, choices: [0,1,2,3].map((idx) => document.getElementById(`choice${idx}`).value), correct_index: parseInt(document.getElementById('correctIndex').value || '0', 10), category: document.getElementById('category').value, explanation: document.getElementById('explanation').value };
     }
 
-    ['answerSeconds','revealSeconds','autoNext','aiProvider','aiEndpoint','aiModel','aiApiKey','aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiIncludePackCategories','aiCategories','ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent','questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation','packJson','packSelect','packCount','replaceQueue'].forEach((id) => {
+    ['answerSeconds','revealSeconds','autoNext','aiProvider','aiEndpoint','aiModel','aiApiKey','aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiIncludePackCategories','aiCategories','ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent','conversationStylePrompt','questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation','packJson','packSelect','packCount','replaceQueue'].forEach((id) => {
       const el = document.getElementById(id); if (!el) return; el.addEventListener('input', () => markDirty(id)); el.addEventListener('change', () => markDirty(id));
     });
 
@@ -329,8 +331,9 @@
           speech_rate_wpm: parseInt(document.getElementById('ttsRate').value || '155', 10),
           use_conversation_agent: document.getElementById('useConversationAgent').value === 'true',
           conversation_agent_id: document.getElementById('conversationAgent').value,
+          conversation_style_prompt: document.getElementById('conversationStylePrompt').value,
         });
-        clearDirty(['ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent']);
+        clearDirty(['ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent','conversationStylePrompt']);
       } catch (err) { setNotice(err.message); }
     });
 
