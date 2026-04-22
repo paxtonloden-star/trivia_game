@@ -55,6 +55,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.question: dict[str, Any] = {}
         self.question_queue: list[dict[str, Any]] = []
         self.custom_packs: dict[str, dict[str, Any]] = {}
+        self.custom_categories: list[str] = []
         self.answer_seconds = DEFAULT_ANSWER_SECONDS
         self.reveal_seconds = DEFAULT_REVEAL_SECONDS
         self.auto_next = DEFAULT_AUTO_NEXT
@@ -103,6 +104,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.players = list(saved.get("players", []))
         self.question = dict(saved.get("question", {}))
         self.question_queue = [dict(item) for item in saved.get("question_queue", []) if isinstance(item, dict)]
+        self.custom_categories = [str(item).strip().lower() for item in saved.get("custom_categories", []) if str(item).strip()]
         saved_packs = dict(saved.get("custom_packs", {}))
         self.custom_packs = {
             str(slug): {
@@ -144,6 +146,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "question": self.question,
             "question_queue": self.question_queue,
             "custom_packs": self.custom_packs,
+            "custom_categories": self.custom_categories,
             "answer_seconds": self.answer_seconds,
             "reveal_seconds": self.reveal_seconds,
             "auto_next": self.auto_next,
@@ -169,6 +172,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "question_queue": self.question_queue,
             "queue_count": len(self.question_queue),
             "custom_packs": self._pack_summaries(),
+            "custom_categories": list(self.custom_categories),
             "answer_seconds": self.answer_seconds,
             "reveal_seconds": self.reveal_seconds,
             "auto_next": self.auto_next,
@@ -305,6 +309,21 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.ai_config["include_pack_categories"] = bool(include_pack_categories)
         await self.async_save()
 
+    async def async_add_custom_category(self, category: str) -> None:
+        clean = str(category or "").strip().lower()
+        if not clean:
+            raise ValueError("Category is required")
+        if clean not in self.custom_categories:
+            self.custom_categories.append(clean)
+            self.custom_categories.sort()
+        await self.async_save()
+
+    async def async_remove_custom_category(self, category: str) -> None:
+        clean = str(category or "").strip().lower()
+        self.custom_categories = [item for item in self.custom_categories if item != clean]
+        self.ai_config["default_categories"] = [item for item in self._normalize_categories(self.ai_config.get("default_categories")) if item != clean]
+        await self.async_save()
+
     async def async_test_ai_connection(self) -> dict[str, Any]:
         self.ai_config["connection_test_in_progress"] = True
         self.ai_config["last_error"] = None
@@ -312,24 +331,12 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             content = await self._async_openai_chat("Reply with exactly: OK")
             normalized = str(content or "").strip()
-            result = {
-                "ok": True,
-                "reply": normalized[:200],
-                "provider": self.ai_config.get("provider"),
-                "model": self.ai_config.get("model"),
-                "at": int(time.time()),
-            }
+            result = {"ok": True, "reply": normalized[:200], "provider": self.ai_config.get("provider"), "model": self.ai_config.get("model"), "at": int(time.time())}
             self.ai_config["last_test_result"] = result
             return result
         except Exception as err:
             self.ai_config["last_error"] = str(err)
-            self.ai_config["last_test_result"] = {
-                "ok": False,
-                "reply": "",
-                "provider": self.ai_config.get("provider"),
-                "model": self.ai_config.get("model"),
-                "at": int(time.time()),
-            }
+            self.ai_config["last_test_result"] = {"ok": False, "reply": "", "provider": self.ai_config.get("provider"), "model": self.ai_config.get("model"), "at": int(time.time())}
             raise
         finally:
             self.ai_config["connection_test_in_progress"] = False
@@ -383,14 +390,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        body = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.2,
-        }
+        body = {"model": model, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}], "temperature": 0.2}
         async with session.post(f"{endpoint}/chat/completions", headers=headers, json=body, timeout=120) as response:
             text = await response.text()
             if response.status >= 400:
@@ -415,22 +415,9 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not services or not hasattr(services, "async_call"):
             return message
         style_prompt = str(self.tts_config.get("conversation_style_prompt") or "").strip() or _DEFAULT_TTS_AGENT_STYLE
-        prompt = (
-            f"{style_prompt} Keep facts unchanged, keep names unchanged, do not add extra information, and return only the line to be spoken. "
-            f"Original line: {message}"
-        )
+        prompt = f"{style_prompt} Keep facts unchanged, keep names unchanged, do not add extra information, and return only the line to be spoken. Original line: {message}"
         try:
-            response = await services.async_call(
-                "conversation",
-                "process",
-                {
-                    "text": prompt,
-                    "language": self.tts_config.get("language") or "en-US",
-                    "agent_id": agent_id,
-                },
-                blocking=True,
-                return_response=True,
-            )
+            response = await services.async_call("conversation", "process", {"text": prompt, "language": self.tts_config.get("language") or "en-US", "agent_id": agent_id}, blocking=True, return_response=True)
             speech = (((response or {}).get("response") or {}).get("speech") or {})
             plain = ((speech.get("plain") or {}).get("speech") or "").strip()
             ssml = ((speech.get("ssml") or {}).get("speech") or "").strip()
@@ -440,14 +427,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _build_ai_generation_prompt(self, *, category_plan: list[str], age_range: str, difficulty: str) -> str:
         plan_lines = [f"{index + 1}. {category}" for index, category in enumerate(category_plan)]
-        return (
-            'Generate a trivia pack as strict JSON with this shape: {"questions":[{"question":"...","choices":["A","B","C","D"],"correct_index":0,"category":"science","explanation":"..."}]}. '
-            "Return JSON only. No markdown. No code fences. "
-            f"Age range: {age_range}. Difficulty: {difficulty}. "
-            "Each question must have exactly 4 answer choices and one correct answer. "
-            "Use the following category assignment sequence exactly, one generated question per line item:\n"
-            + "\n".join(plan_lines)
-        )
+        return ('Generate a trivia pack as strict JSON with this shape: {"questions":[{"question":"...","choices":["A","B","C","D"],"correct_index":0,"category":"science","explanation":"..."}]}. ' "Return JSON only. No markdown. No code fences. " f"Age range: {age_range}. Difficulty: {difficulty}. " "Each question must have exactly 4 answer choices and one correct answer. " "Use the following category assignment sequence exactly, one generated question per line item:\n" + "\n".join(plan_lines))
 
     def _extract_json_payload(self, content: str) -> dict[str, Any]:
         text = str(content or "").strip()
@@ -471,6 +451,9 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _available_ai_category_details(self) -> list[dict[str, str]]:
         details: dict[str, dict[str, str]] = {item: {"value": item, "label": item, "source": "built_in"} for item in _DEFAULT_AI_CATEGORIES}
+        for item in self.custom_categories:
+            if item not in details:
+                details[item] = {"value": item, "label": f"{item} (custom)", "source": "custom"}
         if self.ai_config.get("include_pack_categories", True):
             for slug, pack in self.custom_packs.items():
                 if slug not in details:
@@ -543,12 +526,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         estimated_seconds = max(0.0, min(20.0, estimated_seconds + 0.75))
         services = getattr(self.hass, "services", None)
         if services and hasattr(services, "async_call"):
-            payload = {
-                "entity_id": provider_entity,
-                "media_player_entity_id": speaker_targets if len(speaker_targets) > 1 else speaker_targets[0],
-                "message": spoken_message,
-                "language": self.tts_config.get("language") or "en-US",
-            }
+            payload = {"entity_id": provider_entity, "media_player_entity_id": speaker_targets if len(speaker_targets) > 1 else speaker_targets[0], "message": spoken_message, "language": self.tts_config.get("language") or "en-US"}
             voice = str(self.tts_config.get("voice") or "").strip()
             if voice:
                 payload["options"] = {"voice": voice}
@@ -636,6 +614,22 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.timer_ends_at = time.time() + max(3, int(self.answer_seconds))
         await self.async_save()
 
+    async def _async_start_hidden_round(self, round_question: dict[str, Any]) -> None:
+        question_delay = 0.0
+        if self.tts_config.get("enabled") and self.tts_config.get("announce_question", True):
+            question_delay = await self.async_speak_text(self._question_announcement(round_question))
+        self.state = "submitting"
+        self.round_number += 1
+        self.current_answers = {}
+        self.last_result = {}
+        self.timer_ends_at = None
+        self.question = dict(round_question)
+        await self.async_save()
+        if self.tts_config.get("start_timer_after_tts", True) and question_delay > 0:
+            await asyncio.sleep(question_delay)
+        self.timer_ends_at = time.time() + max(3, int(self.answer_seconds))
+        await self.async_save()
+
     async def async_submit_answer(self, player_name: str, choice_index: int) -> None:
         if self.state != "submitting":
             raise ValueError("Round is not open")
@@ -669,21 +663,13 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 correct_players.append(name)
             results.append({"player": name, "answer_index": answer_index, "answer": answer_text, "correct": is_correct})
         self.state = "results"
-        self.last_result = {
-            "correct_players": correct_players,
-            "correct_answer": self.question.get("correct_answer"),
-            "explanation": self.question.get("explanation", ""),
-            "results": results,
-            "hold_for_manual_next": False,
-        }
-
+        self.last_result = {"correct_players": correct_players, "correct_answer": self.question.get("correct_answer"), "explanation": self.question.get("explanation", ""), "results": results, "hold_for_manual_next": False}
         result_delay = float(self.reveal_seconds)
         if self.tts_config.get("enabled") and self.tts_config.get("announce_result", True):
             spoken_delay = await self.async_speak_text(self._result_announcement(self.last_result))
             result_delay = max(result_delay, spoken_delay)
         else:
             result_delay = max(result_delay, float(_DEFAULT_NO_TTS_RESULT_DELAY_SECONDS))
-
         self.timer_ends_at = time.time() + max(1.0, result_delay)
         await self.async_save()
 
@@ -707,8 +693,8 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.timer_ends_at = None
         self.last_result = {}
         if self.question_queue:
-            self.question = dict(self.question_queue.pop(0))
-            await self.async_start_round()
+            next_question = dict(self.question_queue.pop(0))
+            await self._async_start_hidden_round(next_question)
             return
         self.state = "idle"
         self.question = {}
@@ -770,14 +756,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         correct_index = int(payload.get("correct_index", 0))
         if correct_index < 0 or correct_index >= len(choices):
             raise ValueError("Correct answer is out of range")
-        return {
-            "question": question_text,
-            "choices": choices,
-            "correct_index": correct_index,
-            "correct_answer": choices[correct_index],
-            "category": str(payload.get("category") or "").strip(),
-            "explanation": str(payload.get("explanation") or "").strip(),
-        }
+        return {"question": question_text, "choices": choices, "correct_index": correct_index, "correct_answer": choices[correct_index], "category": str(payload.get("category") or "").strip(), "explanation": str(payload.get("explanation") or "").strip()}
 
     def _question_announcement(self, question: dict[str, Any]) -> str:
         choices = [str(choice).strip() for choice in question.get("choices", []) if str(choice).strip()]
