@@ -144,6 +144,10 @@ class TriviaHostActionView(BaseTriviaView):
                 default_question_count=payload.get("default_question_count"),
                 include_pack_categories=payload.get("include_pack_categories"),
             )
+        elif action == "add_custom_category":
+            await self.coordinator.async_add_custom_category(str(payload.get("category") or "").strip())
+        elif action == "remove_custom_category":
+            await self.coordinator.async_remove_custom_category(str(payload.get("category") or "").strip())
         elif action == "test_ai_connection":
             await self.coordinator.async_test_ai_connection()
         elif action == "generate_ai_pack":
