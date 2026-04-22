@@ -129,6 +129,24 @@ class TriviaHostActionView(BaseTriviaView):
                 start_timer_after_tts=payload.get("start_timer_after_tts"),
                 speech_rate_wpm=payload.get("speech_rate_wpm"),
             )
+        elif action == "set_ai_settings":
+            await self.coordinator.async_set_ai_settings(
+                provider=payload.get("provider"),
+                endpoint=payload.get("endpoint"),
+                model=payload.get("model"),
+                api_key=payload.get("api_key"),
+                default_categories=payload.get("default_categories"),
+                default_age_range=payload.get("default_age_range"),
+                default_question_count=payload.get("default_question_count"),
+            )
+        elif action == "generate_ai_pack":
+            await self.coordinator.async_generate_ai_pack(
+                name=str(payload.get("name") or "").strip(),
+                categories=payload.get("categories") or [],
+                age_range=str(payload.get("age_range") or "").strip(),
+                question_count=int(payload.get("question_count", 10)),
+                queue_after_generate=bool(payload.get("queue_after_generate", False)),
+            )
         elif action == "set_question":
             await self.coordinator.async_set_question(payload)
         elif action == "queue_question":
