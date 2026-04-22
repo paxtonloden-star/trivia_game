@@ -105,6 +105,18 @@ class TriviaHostActionView(BaseTriviaView):
             )
         elif action == "set_question":
             await self.coordinator.async_set_question(payload)
+        elif action == "queue_question":
+            await self.coordinator.async_queue_question(payload)
+        elif action == "import_pack":
+            await self.coordinator.async_import_pack(payload)
+        elif action == "load_pack_to_queue":
+            await self.coordinator.async_load_pack_to_queue(
+                slug=str(payload.get("slug") or "").strip(),
+                count=payload.get("count"),
+                replace_queue=bool(payload.get("replace_queue", False)),
+            )
+        elif action == "next_question":
+            await self.coordinator.async_next_question()
         elif action == "start_round":
             await self.coordinator.async_start_round()
         elif action == "grade_round":
