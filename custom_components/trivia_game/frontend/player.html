@@ -15,6 +15,8 @@
       color: #fff;
       display: grid;
       place-items: center;
+      padding: 18px;
+      box-sizing: border-box;
     }
     .board {
       width: min(1100px, 94vw);
@@ -27,6 +29,8 @@
       padding: 24px;
     }
     h1 { text-align:center; color:#ffd76d; font-size: clamp(32px, 6vw, 70px); margin:0 0 20px; text-transform:uppercase; }
+    .topbar { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+    .pill { display:inline-flex; gap:8px; align-items:center; padding:10px 14px; border-radius:999px; background:#1a2a41; font-weight:700; }
     .question {
       background: linear-gradient(180deg, #f7e6bf 0%, #f3dba9 100%);
       color:#16181f;
@@ -54,24 +58,186 @@
       padding:18px 20px;
       font-size: clamp(20px, 2.6vw, 40px);
       font-weight: 900;
+      cursor:pointer;
     }
+    .answer.selected { box-shadow: 0 0 0 4px rgba(255,190,0,.24); transform: translateY(-1px); }
+    .answer:disabled { opacity:.65; cursor:not-allowed; }
     .badge {
       width:66px; height:66px; border-radius:999px; display:grid; place-items:center;
       background: radial-gradient(circle at 35% 30%, #ffbe5c, #ff7a00 56%, #ac2f00 100%);
       border: 3px solid rgba(255,214,95,.88);
+      flex: 0 0 auto;
     }
+    .join-card { width:min(560px, 100%); background:#111b2b; border:1px solid #263a55; border-radius:16px; padding:20px; }
+    input, button { width:100%; box-sizing:border-box; border-radius:12px; border:1px solid #355074; background:#0d1625; color:#fff; padding:12px; font:inherit; }
+    button { cursor:pointer; background:#d98600; color:#111; font-weight:700; margin-top:10px; }
+    .notice { margin-top:12px; color:#d7e4f5; }
+    .hidden { display:none !important; }
+    .result { margin-top:16px; padding:14px 16px; border-radius:16px; background:#11233b; }
+    @media (max-width: 780px) { .answers { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
-  <div class="board">
-    <h1>Trivia Mode</h1>
-    <div class="question">Question goes here</div>
-    <div class="answers">
-      <div class="answer"><div class="badge">A</div><div>Answer A</div></div>
-      <div class="answer"><div class="badge">B</div><div>Answer B</div></div>
-      <div class="answer"><div class="badge">C</div><div>Answer C</div></div>
-      <div class="answer"><div class="badge">D</div><div>Answer D</div></div>
-    </div>
+  <div id="joinCard" class="join-card hidden">
+    <h2>Join Trivia Game</h2>
+    <input id="playerNameInput" type="text" placeholder="Enter your player name" />
+    <button id="joinBtn">Join game</button>
+    <div id="joinNotice" class="notice"></div>
   </div>
+
+  <div id="board" class="board hidden">
+    <h1>Trivia Mode</h1>
+    <div class="topbar">
+      <div class="pill">Player <strong id="playerNameLabel">Player</strong></div>
+      <div class="pill">Score <strong id="playerScore">0</strong></div>
+      <div class="pill">State <strong id="gameState">idle</strong></div>
+      <div class="pill">Time <strong id="timerText">--</strong></div>
+    </div>
+    <div id="questionText" class="question">Waiting for the host…</div>
+    <div id="answers" class="answers"></div>
+    <div id="resultBox" class="result hidden"></div>
+  </div>
+
+  <script>
+    const stateUrl = '/api/trivia_game/state';
+    const joinUrl = '/api/trivia_game/join';
+    const submitUrl = '/api/trivia_game/submit_answer';
+    const params = new URLSearchParams(location.search);
+    let playerName = (params.get('name') || localStorage.getItem('trivia_game_player_name') || '').trim();
+    let latestState = null;
+    let timerLoop = null;
+    let socket = null;
+
+    function showJoin(message = '') {
+      document.getElementById('joinCard').classList.remove('hidden');
+      document.getElementById('board').classList.add('hidden');
+      document.getElementById('joinNotice').textContent = message;
+      document.getElementById('playerNameInput').value = playerName;
+    }
+
+    function showBoard() {
+      document.getElementById('joinCard').classList.add('hidden');
+      document.getElementById('board').classList.remove('hidden');
+      document.getElementById('playerNameLabel').textContent = playerName || 'Player';
+    }
+
+    async function fetchState() {
+      const response = await fetch(stateUrl, { cache: 'no-store' });
+      const payload = await response.json();
+      render(payload.state);
+    }
+
+    async function joinGame() {
+      const input = document.getElementById('playerNameInput');
+      playerName = (input.value || '').trim();
+      if (!playerName) {
+        showJoin('Player name is required.');
+        return;
+      }
+      const response = await fetch(joinUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: playerName }),
+      });
+      if (!response.ok) {
+        showJoin(await response.text() || 'Unable to join game.');
+        return;
+      }
+      localStorage.setItem('trivia_game_player_name', playerName);
+      const payload = await response.json();
+      render(payload.state);
+    }
+
+    async function submitAnswer(choiceIndex) {
+      const response = await fetch(submitUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ player_name: playerName, choice_index: choiceIndex }),
+      });
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json();
+      render(payload.state);
+    }
+
+    function renderAnswers(state) {
+      const answersEl = document.getElementById('answers');
+      answersEl.innerHTML = '';
+      const choices = Array.isArray(state.question?.choices) ? state.question.choices : [];
+      const selected = state.current_answers?.[playerName];
+      const allowSelect = state.state === 'submitting';
+      choices.forEach((choice, index) => {
+        const button = document.createElement('button');
+        button.className = 'answer';
+        if (selected === index) button.classList.add('selected');
+        button.disabled = !allowSelect;
+        const badge = ['A','B','C','D','E','F'][index] || String(index + 1);
+        button.innerHTML = `<div class="badge">${badge}</div><div>${choice}</div>`;
+        button.addEventListener('click', () => submitAnswer(index).catch(() => {}));
+        answersEl.appendChild(button);
+      });
+    }
+
+    function renderResult(state) {
+      const box = document.getElementById('resultBox');
+      const result = state.last_result || {};
+      if (state.state !== 'results' || !result.correct_answer) {
+        box.classList.add('hidden');
+        box.textContent = '';
+        return;
+      }
+      const winners = Array.isArray(result.correct_players) ? result.correct_players : [];
+      box.classList.remove('hidden');
+      box.textContent = `Correct answer: ${result.correct_answer}. ${winners.length ? `Winners: ${winners.join(', ')}.` : 'Nobody got it right.'} ${result.explanation || ''}`.trim();
+    }
+
+    function render(state) {
+      latestState = state;
+      if (!playerName) {
+        showJoin();
+        return;
+      }
+      const joined = Array.isArray(state.players) && state.players.some((player) => (player.name || '').trim() === playerName);
+      if (!joined) {
+        showJoin('Join the room to keep playing.');
+        return;
+      }
+      showBoard();
+      const me = state.players.find((player) => (player.name || '').trim() === playerName) || { score: 0 };
+      document.getElementById('playerScore').textContent = String(me.score ?? 0);
+      document.getElementById('gameState').textContent = state.state || 'idle';
+      document.getElementById('questionText').textContent = state.question?.question || 'Waiting for the host…';
+      renderAnswers(state);
+      renderResult(state);
+    }
+
+    function updateTimer() {
+      const timerText = document.getElementById('timerText');
+      if (!latestState?.timer_ends_at) {
+        timerText.textContent = latestState?.state === 'results' ? `Reveal ${latestState?.reveal_seconds ?? 5}s` : '--';
+        return;
+      }
+      const remaining = Math.max(0, Math.ceil(latestState.timer_ends_at - Date.now() / 1000));
+      timerText.textContent = String(remaining);
+    }
+
+    function connectSocket() {
+      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+      socket = new WebSocket(`${protocol}://${location.host}/api/trivia_game/ws`);
+      socket.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.event === 'state') render(payload.state);
+      };
+      socket.onclose = () => window.setTimeout(connectSocket, 1500);
+    }
+
+    document.getElementById('joinBtn').addEventListener('click', () => joinGame().catch((err) => showJoin(err.message)));
+    document.getElementById('playerNameInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') joinGame().catch((err) => showJoin(err.message)); });
+
+    fetchState().catch(() => showJoin('Unable to load room state.'));
+    connectSocket();
+    timerLoop = setInterval(updateTimer, 250);
+  </script>
 </body>
 </html>
