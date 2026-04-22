@@ -46,7 +46,32 @@
       font-size: clamp(26px, 4vw, 54px);
       font-weight: 900;
       text-align:center;
+      margin-bottom: 12px;
+    }
+    .reveal {
       margin-bottom: 18px;
+      padding: 18px 22px;
+      border-radius: 20px;
+      background: linear-gradient(180deg, rgba(255,225,140,.22), rgba(255,180,0,.12));
+      border: 2px solid rgba(255,210,110,.45);
+      text-align:center;
+    }
+    .reveal-title {
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color:#ffe49b;
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+    .reveal-answer {
+      font-size: clamp(26px, 3.4vw, 46px);
+      font-weight: 900;
+      color:#fff5cf;
+      margin-bottom: 8px;
+    }
+    .reveal-explanation {
+      font-size: clamp(16px, 2vw, 24px);
+      color:#f0f5ff;
     }
     .answers {
       display:grid;
@@ -68,6 +93,8 @@
       cursor:pointer;
     }
     .answer.selected { box-shadow: 0 0 0 4px rgba(255,190,0,.24); transform: translateY(-1px); }
+    .answer.correct { border-color: rgba(115, 255, 170, .88); box-shadow: 0 0 0 4px rgba(115,255,170,.16); }
+    .answer.incorrect { opacity: .72; }
     .answer:disabled { opacity:.65; cursor:not-allowed; }
     .badge {
       width:66px; height:66px; border-radius:999px; display:grid; place-items:center;
@@ -107,6 +134,11 @@
     </div>
     <div id="questionCategory" class="category"></div>
     <div id="questionText" class="question">Waiting for the host…</div>
+    <div id="revealBox" class="reveal hidden">
+      <div class="reveal-title">Correct Answer</div>
+      <div id="revealAnswer" class="reveal-answer"></div>
+      <div id="revealExplanation" class="reveal-explanation"></div>
+    </div>
     <div id="answers" class="answers"></div>
     <div id="resultBox" class="result hidden"></div>
   </div>
@@ -199,16 +231,35 @@
       const choices = Array.isArray(state.question?.choices) ? state.question.choices : [];
       const selected = state.current_answers?.[playerName];
       const allowSelect = state.state === 'submitting';
+      const correctIndex = state.state === 'results' ? state.question?.correct_index : null;
       choices.forEach((choice, index) => {
         const button = document.createElement('button');
         button.className = 'answer';
         if (selected === index) button.classList.add('selected');
+        if (correctIndex === index) button.classList.add('correct');
+        if (state.state === 'results' && correctIndex !== null && selected === index && selected !== correctIndex) button.classList.add('incorrect');
         button.disabled = !allowSelect;
         const badge = ['A','B','C','D','E','F'][index] || String(index + 1);
         button.innerHTML = `<div class="badge">${badge}</div><div>${choice}</div>`;
         button.addEventListener('click', () => submitAnswer(index).catch(() => {}));
         answersEl.appendChild(button);
       });
+    }
+
+    function renderReveal(state) {
+      const box = document.getElementById('revealBox');
+      const answerEl = document.getElementById('revealAnswer');
+      const explanationEl = document.getElementById('revealExplanation');
+      const result = state.last_result || {};
+      if (state.state !== 'results' || !result.correct_answer) {
+        box.classList.add('hidden');
+        answerEl.textContent = '';
+        explanationEl.textContent = '';
+        return;
+      }
+      box.classList.remove('hidden');
+      answerEl.textContent = result.correct_answer || '';
+      explanationEl.textContent = result.explanation || '';
     }
 
     function renderResult(state) {
@@ -220,8 +271,9 @@
         return;
       }
       const winners = Array.isArray(result.correct_players) ? result.correct_players : [];
+      const hold = result.hold_for_manual_next ? ' Waiting for host to continue.' : '';
       box.classList.remove('hidden');
-      box.textContent = `Correct answer: ${result.correct_answer}. ${winners.length ? `Winners: ${winners.join(', ')}.` : 'Nobody got it right.'} ${result.explanation || ''}`.trim();
+      box.textContent = `${winners.length ? `Winners: ${winners.join(', ')}.` : 'Nobody got it right.'}${hold}`.trim();
     }
 
     function render(state) {
@@ -243,13 +295,17 @@
       document.getElementById('questionText').textContent = state.question?.question || 'Waiting for the host…';
       document.getElementById('questionCategory').textContent = state.question?.category || '';
       renderAnswers(state);
+      renderReveal(state);
       renderResult(state);
+      updateTimer();
     }
 
     function updateTimer() {
       const timerText = document.getElementById('timerText');
       if (!latestState?.timer_ends_at) {
-        timerText.textContent = latestState?.state === 'results' ? `Reveal ${latestState?.reveal_seconds ?? 5}s` : '--';
+        timerText.textContent = latestState?.state === 'results'
+          ? (latestState?.last_result?.hold_for_manual_next ? 'Host next' : '--')
+          : '--';
         return;
       }
       const remaining = Math.max(0, Math.ceil(latestState.timer_ends_at - Date.now() / 1000));
