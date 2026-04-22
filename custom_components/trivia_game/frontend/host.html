@@ -25,6 +25,7 @@
     .join-url { word-break:break-all; }
     .queue-list { margin:0; padding-left:18px; }
     .queue-list li { margin:6px 0; }
+    .dirty-note { color:#ffcf70; font-size:12px; margin-top:8px; }
   </style>
 </head>
 <body>
@@ -93,6 +94,7 @@
       <h2>Pack import</h2>
       <p class="muted">Paste a JSON pack with <code>name</code>, optional <code>description</code>, and a <code>questions</code> array.</p>
       <textarea id="packJson" placeholder='{"name":"Space Pack","questions":[{"question":"...","choices":["A","B"],"correct_index":0}]}'></textarea>
+      <div class="dirty-note" id="dirtyNote"></div>
       <div class="actions" style="margin-top:12px;">
         <button id="importPack">Import pack</button>
       </div>
@@ -132,30 +134,35 @@
     const hostActionUrl = '/api/trivia_game/host_action';
     let latestState = null;
     let socket = null;
-    let suspendRenderUntil = 0;
+    const dirtyFields = new Set();
 
     function setNotice(message) {
       document.getElementById('notice').textContent = message || '';
     }
 
-    function suspendRender(ms = 2000) {
-      suspendRenderUntil = Date.now() + ms;
+    function setDirtyNote() {
+      const note = document.getElementById('dirtyNote');
+      note.textContent = dirtyFields.size ? 'Unsaved edits are being preserved while live updates continue.' : '';
     }
 
-    function shouldSkipElementUpdate(el) {
-      if (!el) return true;
-      if (Date.now() < suspendRenderUntil) {
-        const active = document.activeElement;
-        if (active === el) return true;
-        if (el.tagName === 'TEXTAREA') return true;
-        if (el.tagName === 'INPUT' || el.tagName === 'SELECT') return true;
-      }
-      return document.activeElement === el;
+    function markDirty(id) {
+      dirtyFields.add(id);
+      setDirtyNote();
+    }
+
+    function clearDirty(ids) {
+      ids.forEach((id) => dirtyFields.delete(id));
+      setDirtyNote();
+    }
+
+    function shouldSkip(id) {
+      const el = document.getElementById(id);
+      return dirtyFields.has(id) || document.activeElement === el;
     }
 
     function safeSetValue(id, value) {
       const el = document.getElementById(id);
-      if (!el || shouldSkipElementUpdate(el)) return;
+      if (!el || shouldSkip(id)) return;
       el.value = value ?? '';
     }
 
@@ -172,7 +179,6 @@
 
     async function hostAction(action, extra = {}) {
       setNotice('Working...');
-      suspendRender(2500);
       const response = await fetch(hostActionUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -189,9 +195,7 @@
     }
 
     function fillSelect(select, items, selected, placeholder) {
-      const isFocused = document.activeElement === select;
-      const currentValue = select.value;
-      if (Date.now() < suspendRenderUntil && isFocused) return;
+      if (shouldSkip(select.id)) return;
       select.innerHTML = '';
       const blank = document.createElement('option');
       blank.value = '';
@@ -203,11 +207,11 @@
         option.textContent = item.name || item.label || item.entity_id || item.value || '';
         select.appendChild(option);
       }
-      select.value = selected || currentValue || '';
+      select.value = selected || '';
     }
 
     function fillMultiSelect(select, items, selectedValues) {
-      if (Date.now() < suspendRenderUntil && document.activeElement === select) return;
+      if (shouldSkip(select.id)) return;
       const selected = new Set(selectedValues || []);
       select.innerHTML = '';
       for (const item of items || []) {
@@ -236,7 +240,7 @@
 
     function renderPackOptions(state) {
       const select = document.getElementById('packSelect');
-      if (Date.now() < suspendRenderUntil && document.activeElement === select) return;
+      if (shouldSkip('packSelect')) return;
       const packs = Array.isArray(state.custom_packs) ? state.custom_packs : [];
       const current = select.value;
       select.innerHTML = '';
@@ -333,8 +337,12 @@
       };
     }
 
-    document.addEventListener('input', () => suspendRender(1800), true);
-    document.addEventListener('focusin', () => suspendRender(1800), true);
+    ['answerSeconds','revealSeconds','autoNext','ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation','packJson','packSelect','packCount','replaceQueue'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('input', () => markDirty(id));
+      el.addEventListener('change', () => markDirty(id));
+    });
 
     document.getElementById('saveSettings').addEventListener('click', async () => {
       try {
@@ -343,6 +351,7 @@
           reveal_seconds: parseInt(document.getElementById('revealSeconds').value || '5', 10),
           auto_next: document.getElementById('autoNext').value === 'true',
         });
+        clearDirty(['answerSeconds','revealSeconds','autoNext']);
       } catch (err) { setNotice(err.message); }
     });
 
@@ -360,21 +369,23 @@
           start_timer_after_tts: document.getElementById('startAfterTts').value === 'true',
           speech_rate_wpm: parseInt(document.getElementById('ttsRate').value || '155', 10),
         });
+        clearDirty(['ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts']);
       } catch (err) { setNotice(err.message); }
     });
 
     document.getElementById('saveQuestion').addEventListener('click', async () => {
-      try { await hostAction('set_question', currentQuestionPayload()); } catch (err) { setNotice(err.message); }
+      try { await hostAction('set_question', currentQuestionPayload()); clearDirty(['questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation']); } catch (err) { setNotice(err.message); }
     });
 
     document.getElementById('queueQuestion').addEventListener('click', async () => {
-      try { await hostAction('queue_question', currentQuestionPayload()); } catch (err) { setNotice(err.message); }
+      try { await hostAction('queue_question', currentQuestionPayload()); clearDirty(['questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation']); } catch (err) { setNotice(err.message); }
     });
 
     document.getElementById('importPack').addEventListener('click', async () => {
       try {
         const payload = JSON.parse(document.getElementById('packJson').value || '{}');
         await hostAction('import_pack', payload);
+        clearDirty(['packJson']);
       } catch (err) { setNotice(err.message); }
     });
 
@@ -385,6 +396,7 @@
           count: parseInt(document.getElementById('packCount').value || '10', 10),
           replace_queue: document.getElementById('replaceQueue').value === 'true',
         });
+        clearDirty(['packSelect','packCount','replaceQueue']);
       } catch (err) { setNotice(err.message); }
     });
 
