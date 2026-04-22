@@ -82,7 +82,9 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "default_question_count": 10,
             "include_pack_categories": True,
             "generation_in_progress": False,
+            "connection_test_in_progress": False,
             "last_error": None,
+            "last_test_result": None,
             "last_generation": None,
         }
         self._sockets: set[web.WebSocketResponse] = set()
@@ -152,6 +154,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_broadcast_state()
 
     def as_dict(self) -> dict[str, Any]:
+        category_details = self._available_ai_category_details()
         return {
             "join_code": self.join_code,
             "join_url": self.join_url,
@@ -179,11 +182,14 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "default_question_count": int(self.ai_config.get("default_question_count", 10)),
                 "include_pack_categories": bool(self.ai_config.get("include_pack_categories", True)),
                 "generation_in_progress": bool(self.ai_config.get("generation_in_progress", False)),
+                "connection_test_in_progress": bool(self.ai_config.get("connection_test_in_progress", False)),
                 "last_error": self.ai_config.get("last_error"),
+                "last_test_result": self.ai_config.get("last_test_result"),
                 "last_generation": self.ai_config.get("last_generation"),
                 "has_api_key": bool(self.ai_config.get("api_key")),
                 "provider_options": self._ai_provider_options(),
-                "category_options": self._available_ai_categories(),
+                "category_options": [item["value"] for item in category_details],
+                "category_preview": category_details,
                 "age_options": list(_AGE_TO_DIFFICULTY.keys()),
             },
         }
@@ -286,6 +292,36 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.ai_config["include_pack_categories"] = bool(include_pack_categories)
         await self.async_save()
 
+    async def async_test_ai_connection(self) -> dict[str, Any]:
+        self.ai_config["connection_test_in_progress"] = True
+        self.ai_config["last_error"] = None
+        await self.async_save()
+        try:
+            content = await self._async_openai_chat("Reply with exactly: OK")
+            normalized = str(content or "").strip()
+            result = {
+                "ok": True,
+                "reply": normalized[:200],
+                "provider": self.ai_config.get("provider"),
+                "model": self.ai_config.get("model"),
+                "at": int(time.time()),
+            }
+            self.ai_config["last_test_result"] = result
+            return result
+        except Exception as err:
+            self.ai_config["last_error"] = str(err)
+            self.ai_config["last_test_result"] = {
+                "ok": False,
+                "reply": "",
+                "provider": self.ai_config.get("provider"),
+                "model": self.ai_config.get("model"),
+                "at": int(time.time()),
+            }
+            raise
+        finally:
+            self.ai_config["connection_test_in_progress"] = False
+            await self.async_save()
+
     async def async_generate_ai_pack(self, *, name: str, categories: list[str], age_range: str, question_count: int, queue_after_generate: bool = False) -> dict[str, Any]:
         clean_categories = self._normalize_categories(categories)
         if not clean_categories:
@@ -322,7 +358,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.ai_config["generation_in_progress"] = False
             await self.async_save()
 
-    async def _async_generate_questions_via_openai_compatible(self, *, category_plan: list[str], age_range: str, difficulty: str) -> list[dict[str, Any]]:
+    async def _async_openai_chat(self, user_prompt: str, system_prompt: str = "You are a concise assistant.") -> str:
         endpoint = str(self.ai_config.get("endpoint") or "").rstrip("/")
         model = str(self.ai_config.get("model") or "").strip()
         api_key = str(self.ai_config.get("api_key") or "").strip()
@@ -334,21 +370,24 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        prompt = self._build_ai_generation_prompt(category_plan=category_plan, age_range=age_range, difficulty=difficulty)
         body = {
             "model": model,
             "messages": [
-                {"role": "system", "content": "You create structured trivia questions and must return valid JSON only."},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0.8,
+            "temperature": 0.2,
         }
         async with session.post(f"{endpoint}/chat/completions", headers=headers, json=body, timeout=120) as response:
             text = await response.text()
             if response.status >= 400:
                 raise ValueError(f"AI provider error {response.status}: {text[:300]}")
         payload = json.loads(text)
-        content = (((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        return str((((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "")).strip()
+
+    async def _async_generate_questions_via_openai_compatible(self, *, category_plan: list[str], age_range: str, difficulty: str) -> list[dict[str, Any]]:
+        prompt = self._build_ai_generation_prompt(category_plan=category_plan, age_range=age_range, difficulty=difficulty)
+        content = await self._async_openai_chat(prompt, system_prompt="You create structured trivia questions and must return valid JSON only.")
         parsed = self._extract_json_payload(content)
         questions = parsed.get("questions", []) if isinstance(parsed, dict) else []
         return [{"question": str(item.get("question") or "").strip(), "choices": [str(choice).strip() for choice in item.get("choices", []) if str(choice).strip()], "correct_index": int(item.get("correct_index", 0)), "category": str(item.get("category") or "").strip(), "explanation": str(item.get("explanation") or "").strip()} for item in questions if isinstance(item, dict)]
@@ -384,21 +423,19 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 cleaned.append(value)
         return cleaned
 
-    def _available_ai_categories(self) -> list[str]:
-        categories = list(_DEFAULT_AI_CATEGORIES)
+    def _available_ai_category_details(self) -> list[dict[str, str]]:
+        details: dict[str, dict[str, str]] = {item: {"value": item, "label": item, "source": "built_in"} for item in _DEFAULT_AI_CATEGORIES}
         if self.ai_config.get("include_pack_categories", True):
-            discovered: list[str] = []
             for slug, pack in self.custom_packs.items():
-                if slug not in discovered:
-                    discovered.append(slug)
+                if slug not in details:
+                    details[slug] = {"value": slug, "label": f"{slug} (pack)", "source": "pack_slug"}
                 for item in pack.get("questions", []):
                     category = str(item.get("category") or "").strip().lower()
-                    if category and category not in discovered:
-                        discovered.append(category)
-            for item in discovered:
-                if item not in categories:
-                    categories.append(item)
-        return sorted(categories)
+                    if category and category not in details:
+                        details[category] = {"value": category, "label": f"{category} (from pack)", "source": "pack_question"}
+        values = list(details.values())
+        values.sort(key=lambda item: item["value"])
+        return values
 
     def _ai_provider_options(self) -> list[dict[str, str]]:
         return [{"value": key, "label": value["label"]} for key, value in _DEFAULT_AI_PROVIDER_PRESETS.items()]
