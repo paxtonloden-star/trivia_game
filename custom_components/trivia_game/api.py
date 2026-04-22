@@ -13,6 +13,7 @@ from .coordinator import TriviaGameCoordinator
 
 async def async_register_api(hass: HomeAssistant, coordinator: TriviaGameCoordinator) -> None:
     hass.http.register_view(TriviaStateView(coordinator))
+    hass.http.register_view(TriviaBootstrapView(coordinator))
     hass.http.register_view(TriviaJoinQrView(coordinator))
     hass.http.register_view(TriviaWsView(coordinator))
     hass.http.register_view(TriviaHostActionView(coordinator))
@@ -33,6 +34,19 @@ class TriviaStateView(BaseTriviaView):
 
     async def get(self, request):
         return self.json({"ok": True, "state": self.coordinator.as_dict()})
+
+
+class TriviaBootstrapView(BaseTriviaView):
+    url = f"/api/{DOMAIN}/bootstrap"
+    name = f"api:{DOMAIN}:bootstrap"
+
+    async def get(self, request):
+        return self.json({
+            "ok": True,
+            "state": self.coordinator.as_dict(),
+            "tts_providers": await self.coordinator.async_available_tts_providers(),
+            "speaker_targets": await self.coordinator.async_available_speakers(),
+        })
 
 
 class TriviaJoinQrView(BaseTriviaView):
@@ -102,6 +116,18 @@ class TriviaHostActionView(BaseTriviaView):
                 answer_seconds=payload.get("answer_seconds"),
                 reveal_seconds=payload.get("reveal_seconds"),
                 auto_next=payload.get("auto_next"),
+            )
+        elif action == "set_tts_settings":
+            await self.coordinator.async_set_tts_settings(
+                enabled=payload.get("enabled"),
+                provider_entity=payload.get("provider_entity"),
+                speaker_targets=payload.get("speaker_targets"),
+                language=payload.get("language"),
+                voice=payload.get("voice"),
+                announce_question=payload.get("announce_question"),
+                announce_result=payload.get("announce_result"),
+                start_timer_after_tts=payload.get("start_timer_after_tts"),
+                speech_rate_wpm=payload.get("speech_rate_wpm"),
             )
         elif action == "set_question":
             await self.coordinator.async_set_question(payload)

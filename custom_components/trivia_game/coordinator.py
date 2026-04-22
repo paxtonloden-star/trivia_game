@@ -49,6 +49,17 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.timer_ends_at: float | None = None
         self.round_number = 0
         self.last_result: dict[str, Any] = {}
+        self.tts_config: dict[str, Any] = {
+            "enabled": False,
+            "provider_entity": "",
+            "speaker_targets": [],
+            "language": "en-US",
+            "voice": "",
+            "announce_question": True,
+            "announce_result": True,
+            "start_timer_after_tts": True,
+            "speech_rate_wpm": 155,
+        }
         self._sockets: set[web.WebSocketResponse] = set()
         self._round_task: asyncio.Task | None = None
         self.data = self.as_dict()
@@ -80,6 +91,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.timer_ends_at = float(timer_ends_at) if timer_ends_at else None
         self.round_number = int(saved.get("round_number", 0))
         self.last_result = dict(saved.get("last_result", {}))
+        self.tts_config = {**self.tts_config, **dict(saved.get("tts_config", {}))}
         self.data = self.as_dict()
         self._sync_round_task()
 
@@ -108,6 +120,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "timer_ends_at": self.timer_ends_at,
                 "round_number": self.round_number,
                 "last_result": self.last_result,
+                "tts_config": self.tts_config,
             }
         )
         self._sync_round_task()
@@ -131,6 +144,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "timer_ends_at": self.timer_ends_at,
             "round_number": self.round_number,
             "last_result": self.last_result,
+            "tts": dict(self.tts_config),
         }
 
     @property
@@ -163,7 +177,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         existing = self._find_player(clean)
         if existing is None:
             self.players.append({"name": clean, "score": 0, "picture": str(picture or "").strip()})
-        elif picture:
+        elif picture is not None:
             existing["picture"] = str(picture).strip()
         await self.async_save()
         return self.as_dict()
@@ -184,6 +198,98 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if auto_next is not None:
             self.auto_next = bool(auto_next)
         await self.async_save()
+
+    async def async_set_tts_settings(
+        self,
+        *,
+        enabled: bool | None = None,
+        provider_entity: str | None = None,
+        speaker_targets: list[str] | None = None,
+        language: str | None = None,
+        voice: str | None = None,
+        announce_question: bool | None = None,
+        announce_result: bool | None = None,
+        start_timer_after_tts: bool | None = None,
+        speech_rate_wpm: int | None = None,
+    ) -> None:
+        if enabled is not None:
+            self.tts_config["enabled"] = bool(enabled)
+        if provider_entity is not None:
+            self.tts_config["provider_entity"] = str(provider_entity).strip()
+        if speaker_targets is not None:
+            self.tts_config["speaker_targets"] = [str(item).strip() for item in speaker_targets if str(item).strip()]
+        if language is not None:
+            self.tts_config["language"] = str(language).strip() or "en-US"
+        if voice is not None:
+            self.tts_config["voice"] = str(voice).strip()
+        if announce_question is not None:
+            self.tts_config["announce_question"] = bool(announce_question)
+        if announce_result is not None:
+            self.tts_config["announce_result"] = bool(announce_result)
+        if start_timer_after_tts is not None:
+            self.tts_config["start_timer_after_tts"] = bool(start_timer_after_tts)
+        if speech_rate_wpm is not None:
+            self.tts_config["speech_rate_wpm"] = max(80, min(260, int(speech_rate_wpm)))
+        await self.async_save()
+
+    async def async_available_tts_providers(self) -> list[dict[str, str]]:
+        providers: list[dict[str, str]] = []
+        try:
+            for state in self.hass.states.async_all():
+                entity_id = str(getattr(state, "entity_id", "") or "")
+                if entity_id.startswith("tts."):
+                    providers.append({"entity_id": entity_id, "name": state.attributes.get("friendly_name", entity_id)})
+        except Exception:
+            providers = []
+        current = str(self.tts_config.get("provider_entity") or "").strip()
+        if current and not any(item["entity_id"] == current for item in providers):
+            providers.append({"entity_id": current, "name": f"{current} (current)"})
+        providers.sort(key=lambda item: item["name"].lower())
+        return providers
+
+    async def async_available_speakers(self) -> list[dict[str, str]]:
+        speakers: list[dict[str, str]] = []
+        try:
+            for state in self.hass.states.async_all():
+                entity_id = str(getattr(state, "entity_id", "") or "")
+                if entity_id.startswith("media_player."):
+                    speakers.append({"entity_id": entity_id, "name": state.attributes.get("friendly_name", entity_id)})
+        except Exception:
+            speakers = []
+        for entity_id in [str(item).strip() for item in self.tts_config.get("speaker_targets", []) if str(item).strip()]:
+            if not any(item["entity_id"] == entity_id for item in speakers):
+                speakers.append({"entity_id": entity_id, "name": f"{entity_id} (current)"})
+        speakers.sort(key=lambda item: item["name"].lower())
+        return speakers
+
+    async def async_speak_text(self, message: str) -> float:
+        if not self.tts_config.get("enabled"):
+            return 0.0
+        provider_entity = str(self.tts_config.get("provider_entity") or "").strip()
+        speaker_targets = [str(item).strip() for item in self.tts_config.get("speaker_targets", []) if str(item).strip()]
+        if not provider_entity or not speaker_targets or not str(message or "").strip():
+            return 0.0
+        estimated_seconds = (len(str(message).split()) / max(80, int(self.tts_config.get("speech_rate_wpm", 155)))) * 60.0
+        estimated_seconds = max(0.0, min(20.0, estimated_seconds))
+        services = getattr(self.hass, "services", None)
+        if services and hasattr(services, "async_call"):
+            for target in speaker_targets:
+                try:
+                    await services.async_call(
+                        "tts",
+                        "speak",
+                        {
+                            "entity_id": provider_entity,
+                            "media_player_entity_id": target,
+                            "message": message,
+                            "language": self.tts_config.get("language") or "en-US",
+                            "options": {"voice": self.tts_config.get("voice") or ""},
+                        },
+                        blocking=False,
+                    )
+                except Exception:
+                    continue
+        return estimated_seconds
 
     async def async_set_question(self, payload: dict[str, Any]) -> None:
         self.question = self._normalize_question(payload)
@@ -254,6 +360,13 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.round_number += 1
         self.current_answers = {}
         self.last_result = {}
+        self.timer_ends_at = None
+        await self.async_save()
+        if self.tts_config.get("enabled") and self.tts_config.get("announce_question", True):
+            message = self._question_announcement(self.question)
+            delay = await self.async_speak_text(message)
+            if self.tts_config.get("start_timer_after_tts", True) and delay > 0:
+                await asyncio.sleep(delay)
         self.timer_ends_at = time.time() + max(3, int(self.answer_seconds))
         await self.async_save()
 
@@ -304,6 +417,8 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "hold_for_manual_next": not bool(correct_players),
         }
         await self.async_save()
+        if self.tts_config.get("enabled") and self.tts_config.get("announce_result", True):
+            await self.async_speak_text(self._result_announcement(self.last_result))
 
     async def async_reset_scores(self) -> None:
         for player in self.players:
@@ -390,6 +505,20 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "category": str(payload.get("category") or "").strip(),
             "explanation": str(payload.get("explanation") or "").strip(),
         }
+
+    def _question_announcement(self, question: dict[str, Any]) -> str:
+        choices = [str(choice).strip() for choice in question.get("choices", []) if str(choice).strip()]
+        choices_text = " ".join(f"{chr(65 + idx)}. {choice}." for idx, choice in enumerate(choices[:6]))
+        category = str(question.get("category") or "").strip()
+        prefix = f"Category {category}. " if category else ""
+        return f"{prefix}{question.get('question', '')} {choices_text}".strip()
+
+    def _result_announcement(self, result: dict[str, Any]) -> str:
+        correct_answer = str(result.get("correct_answer") or "").strip()
+        winners = [str(item).strip() for item in result.get("correct_players", []) if str(item).strip()]
+        explanation = str(result.get("explanation") or "").strip()
+        winners_text = f"Winners: {', '.join(winners)}." if winners else "Nobody got it right."
+        return f"The correct answer is {correct_answer}. {winners_text} {explanation}".strip()
 
     def _slugify(self, value: str) -> str:
         clean = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "").strip())
