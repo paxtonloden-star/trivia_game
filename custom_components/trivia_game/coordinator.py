@@ -482,9 +482,25 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         estimated_seconds = max(0.0, min(20.0, estimated_seconds))
         services = getattr(self.hass, "services", None)
         if services and hasattr(services, "async_call"):
+            payload = {
+                "entity_id": provider_entity,
+                "media_player_entity_id": speaker_targets if len(speaker_targets) > 1 else speaker_targets[0],
+                "message": message,
+                "language": self.tts_config.get("language") or "en-US",
+            }
+            voice = str(self.tts_config.get("voice") or "").strip()
+            if voice:
+                payload["options"] = {"voice": voice}
+            try:
+                await services.async_call("tts", "speak", payload, blocking=True)
+                return estimated_seconds
+            except Exception:
+                pass
             for target in speaker_targets:
+                per_target = dict(payload)
+                per_target["media_player_entity_id"] = target
                 try:
-                    await services.async_call("tts", "speak", {"entity_id": provider_entity, "media_player_entity_id": target, "message": message, "language": self.tts_config.get("language") or "en-US", "options": {"voice": self.tts_config.get("voice") or ""}}, blocking=False)
+                    await services.async_call("tts", "speak", per_target, blocking=True)
                 except Exception:
                     continue
         return estimated_seconds
@@ -592,14 +608,13 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 correct_players.append(name)
             results.append({"player": name, "answer_index": answer_index, "answer": answer_text, "correct": is_correct})
         self.state = "results"
-        hold_for_manual_next = not bool(correct_players)
-        self.timer_ends_at = None if hold_for_manual_next else time.time() + max(1, int(self.reveal_seconds))
+        self.timer_ends_at = time.time() + max(1, int(self.reveal_seconds))
         self.last_result = {
             "correct_players": correct_players,
             "correct_answer": self.question.get("correct_answer"),
             "explanation": self.question.get("explanation", ""),
             "results": results,
-            "hold_for_manual_next": hold_for_manual_next,
+            "hold_for_manual_next": False,
         }
         await self.async_save()
         if self.tts_config.get("enabled") and self.tts_config.get("announce_result", True):
