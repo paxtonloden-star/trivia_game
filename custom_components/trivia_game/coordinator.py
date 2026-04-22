@@ -42,6 +42,7 @@ _DEFAULT_AI_PROVIDER_PRESETS = {
 _AGE_TO_DIFFICULTY = {"child": "easy", "teen": "medium", "adult": "hard"}
 _DEFAULT_TTS_AGENT_STYLE = "Energetic trivia host. Keep it short, exciting, and family friendly. Do not change facts, names, answers, or winners."
 _DEFAULT_NO_TTS_RESULT_DELAY_SECONDS = 5
+_DEFAULT_MAX_ROUNDS = 10
 
 
 class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -59,9 +60,13 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.answer_seconds = DEFAULT_ANSWER_SECONDS
         self.reveal_seconds = DEFAULT_REVEAL_SECONDS
         self.auto_next = DEFAULT_AUTO_NEXT
+        self.max_rounds = _DEFAULT_MAX_ROUNDS
+        self.current_game_round = 0
         self.state = "idle"
         self.current_answers: dict[str, int] = {}
         self.timer_ends_at: float | None = None
+        self.paused_remaining: float | None = None
+        self.paused_from_state: str | None = None
         self.round_number = 0
         self.last_result: dict[str, Any] = {}
         self.tts_config: dict[str, Any] = {
@@ -72,6 +77,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "voice": "",
             "announce_question": True,
             "announce_result": True,
+            "announce_scores": True,
             "start_timer_after_tts": True,
             "speech_rate_wpm": 155,
             "use_conversation_agent": False,
@@ -118,10 +124,15 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.answer_seconds = int(saved.get("answer_seconds", DEFAULT_ANSWER_SECONDS))
         self.reveal_seconds = int(saved.get("reveal_seconds", DEFAULT_REVEAL_SECONDS))
         self.auto_next = bool(saved.get("auto_next", DEFAULT_AUTO_NEXT))
+        self.max_rounds = max(1, int(saved.get("max_rounds", _DEFAULT_MAX_ROUNDS)))
+        self.current_game_round = max(0, int(saved.get("current_game_round", 0)))
         self.state = str(saved.get("state", "idle"))
         self.current_answers = {str(k): int(v) for k, v in dict(saved.get("current_answers", {})).items()}
         timer_ends_at = saved.get("timer_ends_at")
         self.timer_ends_at = float(timer_ends_at) if timer_ends_at else None
+        paused_remaining = saved.get("paused_remaining")
+        self.paused_remaining = float(paused_remaining) if paused_remaining else None
+        self.paused_from_state = str(saved.get("paused_from_state") or "").strip() or None
         self.round_number = int(saved.get("round_number", 0))
         self.last_result = dict(saved.get("last_result", {}))
         self.tts_config = {**self.tts_config, **dict(saved.get("tts_config", {}))}
@@ -150,9 +161,13 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "answer_seconds": self.answer_seconds,
             "reveal_seconds": self.reveal_seconds,
             "auto_next": self.auto_next,
+            "max_rounds": self.max_rounds,
+            "current_game_round": self.current_game_round,
             "state": self.state,
             "current_answers": self.current_answers,
             "timer_ends_at": self.timer_ends_at,
+            "paused_remaining": self.paused_remaining,
+            "paused_from_state": self.paused_from_state,
             "round_number": self.round_number,
             "last_result": self.last_result,
             "tts_config": self.tts_config,
@@ -176,9 +191,12 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "answer_seconds": self.answer_seconds,
             "reveal_seconds": self.reveal_seconds,
             "auto_next": self.auto_next,
+            "max_rounds": self.max_rounds,
+            "current_game_round": self.current_game_round,
             "state": self.state,
             "current_answers": self.current_answers,
             "timer_ends_at": self.timer_ends_at,
+            "paused_remaining": self.paused_remaining,
             "round_number": self.round_number,
             "last_result": self.last_result,
             "tts": dict(self.tts_config),
@@ -245,16 +263,18 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.current_answers = {player_name: answer for player_name, answer in self.current_answers.items() if player_name.strip().lower() != clean}
         await self.async_save()
 
-    async def async_set_settings(self, answer_seconds: int | None = None, reveal_seconds: int | None = None, auto_next: bool | None = None) -> None:
+    async def async_set_settings(self, answer_seconds: int | None = None, reveal_seconds: int | None = None, auto_next: bool | None = None, max_rounds: int | None = None) -> None:
         if answer_seconds is not None:
             self.answer_seconds = max(3, int(answer_seconds))
         if reveal_seconds is not None:
             self.reveal_seconds = max(1, int(reveal_seconds))
         if auto_next is not None:
             self.auto_next = bool(auto_next)
+        if max_rounds is not None:
+            self.max_rounds = max(1, int(max_rounds))
         await self.async_save()
 
-    async def async_set_tts_settings(self, *, enabled: bool | None = None, provider_entity: str | None = None, speaker_targets: list[str] | None = None, language: str | None = None, voice: str | None = None, announce_question: bool | None = None, announce_result: bool | None = None, start_timer_after_tts: bool | None = None, speech_rate_wpm: int | None = None, use_conversation_agent: bool | None = None, conversation_agent_id: str | None = None, conversation_style_prompt: str | None = None) -> None:
+    async def async_set_tts_settings(self, *, enabled: bool | None = None, provider_entity: str | None = None, speaker_targets: list[str] | None = None, language: str | None = None, voice: str | None = None, announce_question: bool | None = None, announce_result: bool | None = None, announce_scores: bool | None = None, start_timer_after_tts: bool | None = None, speech_rate_wpm: int | None = None, use_conversation_agent: bool | None = None, conversation_agent_id: str | None = None, conversation_style_prompt: str | None = None) -> None:
         if enabled is not None:
             self.tts_config["enabled"] = bool(enabled)
         if provider_entity is not None:
@@ -269,6 +289,8 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.tts_config["announce_question"] = bool(announce_question)
         if announce_result is not None:
             self.tts_config["announce_result"] = bool(announce_result)
+        if announce_scores is not None:
+            self.tts_config["announce_scores"] = bool(announce_scores)
         if start_timer_after_tts is not None:
             self.tts_config["start_timer_after_tts"] = bool(start_timer_after_tts)
         if speech_rate_wpm is not None:
@@ -322,6 +344,60 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         clean = str(category or "").strip().lower()
         self.custom_categories = [item for item in self.custom_categories if item != clean]
         self.ai_config["default_categories"] = [item for item in self._normalize_categories(self.ai_config.get("default_categories")) if item != clean]
+        await self.async_save()
+
+    async def async_start_game(self) -> None:
+        if self.state == "paused":
+            await self.async_resume_game()
+            return
+        if self.state == "game_over":
+            self.current_game_round = 0
+            self.last_result = {}
+            self.state = "idle"
+        if self.state == "idle":
+            await self.async_start_round()
+
+    async def async_pause_game(self) -> None:
+        if self.state not in {"submitting", "results"}:
+            return
+        self.paused_from_state = self.state
+        self.paused_remaining = max(0.0, self.timer_ends_at - time.time()) if self.timer_ends_at else None
+        self.timer_ends_at = None
+        self.state = "paused"
+        self._cancel_round_task()
+        await self.async_save()
+
+    async def async_resume_game(self) -> None:
+        if self.state != "paused":
+            return
+        self.state = self.paused_from_state or "submitting"
+        self.timer_ends_at = time.time() + max(1.0, self.paused_remaining or 1.0)
+        self.paused_remaining = None
+        self.paused_from_state = None
+        await self.async_save()
+
+    async def async_end_game(self) -> None:
+        self._cancel_round_task()
+        self.state = "game_over"
+        self.timer_ends_at = None
+        self.paused_remaining = None
+        self.paused_from_state = None
+        self.last_result = {**self.last_result, "final_scores": self._score_summary()}
+        await self.async_save()
+        if self.tts_config.get("enabled") and self.tts_config.get("announce_scores", True):
+            await self.async_speak_text(self._score_announcement())
+
+    async def async_reset_game(self) -> None:
+        self._cancel_round_task()
+        self.state = "idle"
+        self.current_game_round = 0
+        self.current_answers = {}
+        self.timer_ends_at = None
+        self.paused_remaining = None
+        self.paused_from_state = None
+        self.last_result = {}
+        self.question = {}
+        self.question_queue = []
         await self.async_save()
 
     async def async_test_ai_connection(self) -> dict[str, Any]:
@@ -595,6 +671,8 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_save()
 
     async def async_start_round(self) -> None:
+        if self.state == "game_over":
+            raise ValueError("Game is over. Reset or start a new game.")
         if not self.question.get("question"):
             if self.question_queue:
                 self.question = dict(self.question_queue.pop(0))
@@ -602,6 +680,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise ValueError("Set or queue a question first")
         self.state = "submitting"
         self.round_number += 1
+        self.current_game_round += 1
         self.current_answers = {}
         self.last_result = {}
         self.timer_ends_at = None
@@ -620,6 +699,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             question_delay = await self.async_speak_text(self._question_announcement(round_question))
         self.state = "submitting"
         self.round_number += 1
+        self.current_game_round += 1
         self.current_answers = {}
         self.last_result = {}
         self.timer_ends_at = None
@@ -692,6 +772,9 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.current_answers = {}
         self.timer_ends_at = None
         self.last_result = {}
+        if self.current_game_round >= self.max_rounds:
+            await self.async_end_game()
+            return
         if self.question_queue:
             next_question = dict(self.question_queue.pop(0))
             await self._async_start_hidden_round(next_question)
@@ -771,6 +854,18 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         explanation = str(result.get("explanation") or "").strip()
         winners_text = f"Winners: {', '.join(winners)}." if winners else "Nobody got it right."
         return f"The correct answer is {correct_answer}. {winners_text} {explanation}".strip()
+
+    def _score_summary(self) -> list[dict[str, Any]]:
+        rows = [{"name": str(player.get("name") or ""), "score": int(player.get("score", 0))} for player in self.players]
+        rows.sort(key=lambda item: (-item["score"], item["name"].lower()))
+        return rows
+
+    def _score_announcement(self) -> str:
+        rows = self._score_summary()
+        if not rows:
+            return "The game is over. No scores to report."
+        spoken = "; ".join(f"{row['name']} with {row['score']}" for row in rows)
+        return f"The game is over. Final scores. {spoken}."
 
     def _slugify(self, value: str) -> str:
         clean = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "").strip())
