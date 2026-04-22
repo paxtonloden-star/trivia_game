@@ -32,6 +32,8 @@
     .error-box { margin-top:8px; padding:10px 12px; border-radius:12px; background:#4a1d24; color:#ffd8de; border:1px solid #7b313f; }
     .preset-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
     .preset-btn { width:auto; min-width:unset; padding:8px 10px; border-radius:999px; background:#13263d; }
+    .mini-row { display:flex; gap:8px; align-items:center; }
+    .mini-row > *:first-child { flex:1; }
   </style>
 </head>
 <body>
@@ -72,6 +74,11 @@
         <label>Include imported pack categories<select id="aiIncludePackCategories"><option value="true">Yes</option><option value="false">No</option></select></label>
         <label>Categories<select id="aiCategories" multiple size="8"></select><div class="helper">Select one or more. When multiple are selected, each generated question randomly uses one selected category.</div></label>
       </div>
+      <div class="mini-row" style="margin-top:12px;">
+        <input id="customCategoryInput" type="text" placeholder="Add custom category, like mythology or robotics">
+        <button id="addCustomCategory">Add category</button>
+      </div>
+      <div class="helper" id="customCategoryList"></div>
       <div class="helper">Current API key status: <span id="aiApiKeyStatus" class="status-chip">Not set</span></div>
       <div class="helper" id="aiGenerationStatus"></div>
       <div class="helper" id="lastGenerationSummary"></div>
@@ -226,13 +233,7 @@
     function buildStylePresetButtons() {
       const row = document.getElementById('stylePresetRow');
       row.innerHTML = '';
-      const labels = {
-        game_show: 'Game Show',
-        sarcastic_teen: 'Sarcastic Teen',
-        family_friendly: 'Family Friendly',
-        dramatic_announcer: 'Dramatic',
-        calm_host: 'Calm Host',
-      };
+      const labels = { game_show: 'Game Show', sarcastic_teen: 'Sarcastic Teen', family_friendly: 'Family Friendly', dramatic_announcer: 'Dramatic', calm_host: 'Calm Host' };
       for (const [key, value] of Object.entries(STYLE_PRESETS)) {
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -244,6 +245,18 @@
         });
         row.appendChild(btn);
       }
+    }
+
+    function renderCustomCategories(state) {
+      const wrap = document.getElementById('customCategoryList');
+      const items = Array.isArray(state.custom_categories) ? state.custom_categories : [];
+      if (!items.length) { wrap.textContent = 'No custom categories yet.'; return; }
+      wrap.innerHTML = items.map((item) => `${item} <button data-remove-category="${item}" class="preset-btn" style="margin-left:6px;">Remove</button>`).join(' &nbsp; ');
+      wrap.querySelectorAll('button[data-remove-category]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          try { await hostAction('remove_custom_category', { category: button.dataset.removeCategory }); } catch (err) { setNotice(err.message); }
+        });
+      });
     }
 
     async function fetchState() { const response = await fetch(stateUrl, { cache: 'no-store' }); const payload = await response.json(); render(payload.state); }
@@ -314,6 +327,7 @@
       document.getElementById('joinUrl').textContent = state.join_url || '';
       safeSetValue('answerSeconds', state.answer_seconds ?? 20); safeSetValue('revealSeconds', state.reveal_seconds ?? 5); safeSetValue('autoNext', String(Boolean(state.auto_next)));
       renderAiControls(state.ai || {});
+      renderCustomCategories(state);
       const q = state.question || {}; safeSetValue('questionText', q.question || ''); const choices = Array.isArray(q.choices) ? q.choices : [];
       for (let i = 0; i < 4; i += 1) safeSetValue(`choice${i}`, choices[i] || '');
       safeSetValue('correctIndex', String(q.correct_index ?? 0)); safeSetValue('category', q.category || ''); safeSetValue('explanation', q.explanation || '');
@@ -339,36 +353,15 @@
       return { question: document.getElementById('questionText').value, choices: [0,1,2,3].map((idx) => document.getElementById(`choice${idx}`).value), correct_index: parseInt(document.getElementById('correctIndex').value || '0', 10), category: document.getElementById('category').value, explanation: document.getElementById('explanation').value };
     }
 
-    ['answerSeconds','revealSeconds','autoNext','aiProvider','aiEndpoint','aiModel','aiApiKey','aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiIncludePackCategories','aiCategories','ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent','conversationStylePrompt','questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation','packJson','packSelect','packCount','replaceQueue'].forEach((id) => {
+    ['answerSeconds','revealSeconds','autoNext','aiProvider','aiEndpoint','aiModel','aiApiKey','aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiIncludePackCategories','aiCategories','ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent','conversationStylePrompt','questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation','packJson','packSelect','packCount','replaceQueue','customCategoryInput'].forEach((id) => {
       const el = document.getElementById(id); if (!el) return; el.addEventListener('input', () => markDirty(id)); el.addEventListener('change', () => markDirty(id));
     });
 
     document.getElementById('saveSettings').addEventListener('click', async () => { try { await hostAction('set_settings', { answer_seconds: parseInt(document.getElementById('answerSeconds').value || '20', 10), reveal_seconds: parseInt(document.getElementById('revealSeconds').value || '5', 10), auto_next: document.getElementById('autoNext').value === 'true' }); clearDirty(['answerSeconds','revealSeconds','autoNext']); } catch (err) { setNotice(err.message); } });
-
     document.getElementById('saveAiSettings').addEventListener('click', async () => { try { await hostAction('set_ai_settings', { provider: document.getElementById('aiProvider').value, endpoint: document.getElementById('aiEndpoint').value, model: document.getElementById('aiModel').value, api_key: document.getElementById('aiApiKey').value, default_categories: selectedValues('aiCategories'), default_age_range: document.getElementById('aiAgeRange').value, default_question_count: parseInt(document.getElementById('aiQuestionCount').value || '10', 10), include_pack_categories: document.getElementById('aiIncludePackCategories').value === 'true' }); clearDirty(['aiProvider','aiEndpoint','aiModel','aiApiKey','aiAgeRange','aiQuestionCount','aiIncludePackCategories','aiCategories']); } catch (err) { setNotice(err.message); } });
-
     document.getElementById('generateAiPack').addEventListener('click', async () => { try { await hostAction('generate_ai_pack', { name: document.getElementById('aiPackName').value, categories: selectedValues('aiCategories'), age_range: document.getElementById('aiAgeRange').value, question_count: parseInt(document.getElementById('aiQuestionCount').value || '10', 10), queue_after_generate: document.getElementById('aiQueueAfterGenerate').value === 'true' }); clearDirty(['aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiCategories']); setNotice('AI pack generated.'); } catch (err) { setNotice(err.message); } });
-
-    document.getElementById('saveTts').addEventListener('click', async () => {
-      try {
-        await hostAction('set_tts_settings', {
-          enabled: document.getElementById('ttsEnabled').value === 'true',
-          provider_entity: document.getElementById('ttsProvider').value,
-          speaker_targets: Array.from(document.getElementById('speakerTargets').selectedOptions).map((option) => option.value),
-          language: document.getElementById('ttsLanguage').value,
-          voice: document.getElementById('ttsVoice').value,
-          announce_question: document.getElementById('announceQuestion').value === 'true',
-          announce_result: document.getElementById('announceResult').value === 'true',
-          start_timer_after_tts: document.getElementById('startAfterTts').value === 'true',
-          speech_rate_wpm: parseInt(document.getElementById('ttsRate').value || '155', 10),
-          use_conversation_agent: document.getElementById('useConversationAgent').value === 'true',
-          conversation_agent_id: document.getElementById('conversationAgent').value,
-          conversation_style_prompt: document.getElementById('conversationStylePrompt').value,
-        });
-        clearDirty(['ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent','conversationStylePrompt']);
-      } catch (err) { setNotice(err.message); }
-    });
-
+    document.getElementById('addCustomCategory').addEventListener('click', async () => { try { await hostAction('add_custom_category', { category: document.getElementById('customCategoryInput').value }); document.getElementById('customCategoryInput').value = ''; clearDirty(['customCategoryInput']); } catch (err) { setNotice(err.message); } });
+    document.getElementById('saveTts').addEventListener('click', async () => { try { await hostAction('set_tts_settings', { enabled: document.getElementById('ttsEnabled').value === 'true', provider_entity: document.getElementById('ttsProvider').value, speaker_targets: Array.from(document.getElementById('speakerTargets').selectedOptions).map((option) => option.value), language: document.getElementById('ttsLanguage').value, voice: document.getElementById('ttsVoice').value, announce_question: document.getElementById('announceQuestion').value === 'true', announce_result: document.getElementById('announceResult').value === 'true', start_timer_after_tts: document.getElementById('startAfterTts').value === 'true', speech_rate_wpm: parseInt(document.getElementById('ttsRate').value || '155', 10), use_conversation_agent: document.getElementById('useConversationAgent').value === 'true', conversation_agent_id: document.getElementById('conversationAgent').value, conversation_style_prompt: document.getElementById('conversationStylePrompt').value, }); clearDirty(['ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent','conversationStylePrompt']); } catch (err) { setNotice(err.message); } });
     document.getElementById('saveQuestion').addEventListener('click', async () => { try { await hostAction('set_question', currentQuestionPayload()); clearDirty(['questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation']); } catch (err) { setNotice(err.message); } });
     document.getElementById('queueQuestion').addEventListener('click', async () => { try { await hostAction('queue_question', currentQuestionPayload()); clearDirty(['questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation']); } catch (err) { setNotice(err.message); } });
     document.getElementById('importPack').addEventListener('click', async () => { try { const payload = JSON.parse(document.getElementById('packJson').value || '{}'); await hostAction('import_pack', payload); clearDirty(['packJson']); } catch (err) { setNotice(err.message); } });
