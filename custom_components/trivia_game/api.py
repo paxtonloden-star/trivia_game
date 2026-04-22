@@ -131,6 +131,7 @@ class TriviaHostActionView(BaseTriviaView):
                 speech_rate_wpm=payload.get("speech_rate_wpm"),
                 use_conversation_agent=payload.get("use_conversation_agent"),
                 conversation_agent_id=payload.get("conversation_agent_id"),
+                conversation_style_prompt=payload.get("conversation_style_prompt"),
             )
         elif action == "set_ai_settings":
             await self.coordinator.async_set_ai_settings(
