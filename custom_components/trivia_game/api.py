@@ -46,6 +46,7 @@ class TriviaBootstrapView(BaseTriviaView):
             "state": self.coordinator.as_dict(),
             "tts_providers": await self.coordinator.async_available_tts_providers(),
             "speaker_targets": await self.coordinator.async_available_speakers(),
+            "conversation_agents": await self.coordinator.async_available_conversation_agents(),
         })
 
 
@@ -128,6 +129,8 @@ class TriviaHostActionView(BaseTriviaView):
                 announce_result=payload.get("announce_result"),
                 start_timer_after_tts=payload.get("start_timer_after_tts"),
                 speech_rate_wpm=payload.get("speech_rate_wpm"),
+                use_conversation_agent=payload.get("use_conversation_agent"),
+                conversation_agent_id=payload.get("conversation_agent_id"),
             )
         elif action == "set_ai_settings":
             await self.coordinator.async_set_ai_settings(
