@@ -592,8 +592,15 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 correct_players.append(name)
             results.append({"player": name, "answer_index": answer_index, "answer": answer_text, "correct": is_correct})
         self.state = "results"
-        self.timer_ends_at = None
-        self.last_result = {"correct_players": correct_players, "correct_answer": self.question.get("correct_answer"), "explanation": self.question.get("explanation", ""), "results": results, "hold_for_manual_next": not bool(correct_players)}
+        hold_for_manual_next = not bool(correct_players)
+        self.timer_ends_at = None if hold_for_manual_next else time.time() + max(1, int(self.reveal_seconds))
+        self.last_result = {
+            "correct_players": correct_players,
+            "correct_answer": self.question.get("correct_answer"),
+            "explanation": self.question.get("explanation", ""),
+            "results": results,
+            "hold_for_manual_next": hold_for_manual_next,
+        }
         await self.async_save()
         if self.tts_config.get("enabled") and self.tts_config.get("announce_result", True):
             await self.async_speak_text(self._result_announcement(self.last_result))
