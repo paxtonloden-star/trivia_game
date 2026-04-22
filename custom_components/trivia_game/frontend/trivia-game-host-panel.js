@@ -11,6 +11,7 @@ class TriviaGameHostPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    this._initialized = false;
   }
 
   connectedCallback() {
@@ -19,7 +20,9 @@ class TriviaGameHostPanel extends HTMLElement {
 
   set hass(value) {
     this._hass = value;
-    this.render();
+    if (!this._initialized) {
+      this.render();
+    }
   }
 
   get hass() {
@@ -27,7 +30,7 @@ class TriviaGameHostPanel extends HTMLElement {
   }
 
   render() {
-    if (!this.shadowRoot) return;
+    if (!this.shadowRoot || this._initialized) return;
     const path = "/api/trivia_game/static/host.html";
     this.shadowRoot.innerHTML = `
       <style>
@@ -51,6 +54,7 @@ class TriviaGameHostPanel extends HTMLElement {
         <iframe src="${path}" title="Trivia Game Host"></iframe>
       </div>
     `;
+    this._initialized = true;
   }
 }
 
