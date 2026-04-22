@@ -40,6 +40,7 @@ _DEFAULT_AI_PROVIDER_PRESETS = {
     "custom": {"label": "Custom OpenAI-Compatible", "endpoint": "", "default_model": ""},
 }
 _AGE_TO_DIFFICULTY = {"child": "easy", "teen": "medium", "adult": "hard"}
+_DEFAULT_TTS_AGENT_STYLE = "Energetic trivia host. Keep it short, exciting, and family friendly. Do not change facts, names, answers, or winners."
 
 
 class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -73,6 +74,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "speech_rate_wpm": 155,
             "use_conversation_agent": False,
             "conversation_agent_id": "",
+            "conversation_style_prompt": _DEFAULT_TTS_AGENT_STYLE,
         }
         self.ai_config: dict[str, Any] = {
             "provider": "openai",
@@ -247,7 +249,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.auto_next = bool(auto_next)
         await self.async_save()
 
-    async def async_set_tts_settings(self, *, enabled: bool | None = None, provider_entity: str | None = None, speaker_targets: list[str] | None = None, language: str | None = None, voice: str | None = None, announce_question: bool | None = None, announce_result: bool | None = None, start_timer_after_tts: bool | None = None, speech_rate_wpm: int | None = None, use_conversation_agent: bool | None = None, conversation_agent_id: str | None = None) -> None:
+    async def async_set_tts_settings(self, *, enabled: bool | None = None, provider_entity: str | None = None, speaker_targets: list[str] | None = None, language: str | None = None, voice: str | None = None, announce_question: bool | None = None, announce_result: bool | None = None, start_timer_after_tts: bool | None = None, speech_rate_wpm: int | None = None, use_conversation_agent: bool | None = None, conversation_agent_id: str | None = None, conversation_style_prompt: str | None = None) -> None:
         if enabled is not None:
             self.tts_config["enabled"] = bool(enabled)
         if provider_entity is not None:
@@ -270,6 +272,9 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.tts_config["use_conversation_agent"] = bool(use_conversation_agent)
         if conversation_agent_id is not None:
             self.tts_config["conversation_agent_id"] = str(conversation_agent_id).strip()
+        if conversation_style_prompt is not None:
+            clean_prompt = str(conversation_style_prompt).strip()
+            self.tts_config["conversation_style_prompt"] = clean_prompt or _DEFAULT_TTS_AGENT_STYLE
         await self.async_save()
 
     async def async_set_ai_settings(self, *, provider: str | None = None, endpoint: str | None = None, model: str | None = None, api_key: str | None = None, default_categories: list[str] | None = None, default_age_range: str | None = None, default_question_count: int | None = None, include_pack_categories: bool | None = None) -> None:
@@ -408,9 +413,10 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         services = getattr(self.hass, "services", None)
         if not services or not hasattr(services, "async_call"):
             return message
+        style_prompt = str(self.tts_config.get("conversation_style_prompt") or "").strip() or _DEFAULT_TTS_AGENT_STYLE
         prompt = (
-            "Rewrite this as a short, energetic trivia host line. Keep facts unchanged, keep names unchanged, do not add extra information, and return only the line to be spoken: "
-            f"{message}"
+            f"{style_prompt} Keep facts unchanged, keep names unchanged, do not add extra information, and return only the line to be spoken. "
+            f"Original line: {message}"
         )
         try:
             response = await services.async_call(
