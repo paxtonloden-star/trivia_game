@@ -30,6 +30,8 @@
     .helper { font-size:12px; color:#a9bddb; margin-top:6px; }
     .status-chip { display:inline-block; padding:6px 10px; border-radius:999px; background:#17304d; color:#dcecff; font-size:12px; }
     .error-box { margin-top:8px; padding:10px 12px; border-radius:12px; background:#4a1d24; color:#ffd8de; border:1px solid #7b313f; }
+    .preset-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    .preset-btn { width:auto; min-width:unset; padding:8px 10px; border-radius:999px; background:#13263d; }
   </style>
 </head>
 <body>
@@ -94,7 +96,7 @@
         <label>Start timer after TTS<select id="startAfterTts"><option value="true">Yes</option><option value="false">No</option></select></label>
         <label>Use conversation agent<select id="useConversationAgent"><option value="false">No</option><option value="true">Yes</option></select></label>
         <label>Conversation agent<select id="conversationAgent"></select></label>
-        <label style="grid-column:1 / -1;">Conversation style prompt<textarea id="conversationStylePrompt" placeholder="Energetic trivia host. Keep it short, exciting, and family friendly."></textarea><div class="helper">This guides how the selected conversation agent rewrites the spoken line before TTS.</div></label>
+        <label style="grid-column:1 / -1;">Conversation style prompt<textarea id="conversationStylePrompt" placeholder="Energetic trivia host. Keep it short, exciting, and family friendly."></textarea><div class="helper">This guides how the selected conversation agent rewrites the spoken line before TTS.</div><div class="preset-row" id="stylePresetRow"></div></label>
       </div>
       <div class="helper">When enabled, the selected conversation agent rewrites the spoken line before it is sent to TTS.</div>
       <div class="actions" style="margin-top:12px;"><button id="saveTts">Save TTS settings</button></div>
@@ -167,6 +169,13 @@
     let latestState = null;
     let socket = null;
     const dirtyFields = new Set();
+    const STYLE_PRESETS = {
+      game_show: 'Big TV game show host. Keep it punchy, dramatic, and exciting. Do not change facts, names, answers, or winners.',
+      sarcastic_teen: 'Sarcastic but family-friendly teen trivia host. Be witty and playful, but keep it short. Do not change facts, names, answers, or winners.',
+      family_friendly: 'Warm, upbeat, family-friendly trivia host. Keep it encouraging and clear. Do not change facts, names, answers, or winners.',
+      dramatic_announcer: 'Huge dramatic announcer energy. Make it bold and short. Do not change facts, names, answers, or winners.',
+      calm_host: 'Calm, clear, polished host voice. Keep it concise and easy to follow. Do not change facts, names, answers, or winners.'
+    };
 
     function setNotice(message) { document.getElementById('notice').textContent = message || ''; }
     function setDirtyNote() { document.getElementById('dirtyNote').textContent = dirtyFields.size ? 'Unsaved edits are being preserved while live updates continue.' : ''; }
@@ -213,6 +222,29 @@
     }
 
     function selectedValues(selectId) { return Array.from(document.getElementById(selectId).selectedOptions).map((option) => option.value).filter(Boolean); }
+
+    function buildStylePresetButtons() {
+      const row = document.getElementById('stylePresetRow');
+      row.innerHTML = '';
+      const labels = {
+        game_show: 'Game Show',
+        sarcastic_teen: 'Sarcastic Teen',
+        family_friendly: 'Family Friendly',
+        dramatic_announcer: 'Dramatic',
+        calm_host: 'Calm Host',
+      };
+      for (const [key, value] of Object.entries(STYLE_PRESETS)) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'preset-btn';
+        btn.textContent = labels[key] || key;
+        btn.addEventListener('click', () => {
+          document.getElementById('conversationStylePrompt').value = value;
+          markDirty('conversationStylePrompt');
+        });
+        row.appendChild(btn);
+      }
+    }
 
     async function fetchState() { const response = await fetch(stateUrl, { cache: 'no-store' }); const payload = await response.json(); render(payload.state); }
     async function fetchBootstrap() { const response = await fetch(bootstrapUrl, { cache: 'no-store' }); return response.json(); }
@@ -347,6 +379,7 @@
     document.getElementById('clearRound').addEventListener('click', async () => { try { await hostAction('clear_round'); } catch (err) { setNotice(err.message); } });
     document.getElementById('resetScores').addEventListener('click', async () => { try { await hostAction('reset_scores'); } catch (err) { setNotice(err.message); } });
 
+    buildStylePresetButtons();
     fetchState().then(refreshAudioControls).catch((err) => setNotice(err.message));
     connectSocket();
     setInterval(() => { if (socket && socket.readyState === WebSocket.OPEN) socket.send('ping'); }, 15000);
