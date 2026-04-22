@@ -5,16 +5,203 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Trivia Game Host</title>
   <style>
+    :root { color-scheme: dark; }
     body { font-family: system-ui, sans-serif; background:#08111f; color:#fff; margin:0; padding:24px; }
-    .card { max-width: 980px; margin: 0 auto; background:#111b2b; border:1px solid #263a55; border-radius:16px; padding:20px; }
-    .pill { display:inline-block; padding:8px 12px; border-radius:999px; background:#1a2a41; }
+    .wrap { max-width: 1200px; margin: 0 auto; display:grid; gap:16px; }
+    .card { background:#111b2b; border:1px solid #263a55; border-radius:16px; padding:20px; box-shadow:0 12px 28px rgba(0,0,0,.22); }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:12px; }
+    input, textarea, select, button { width:100%; box-sizing:border-box; border-radius:12px; border:1px solid #355074; background:#0d1625; color:#fff; padding:12px; font:inherit; }
+    textarea { min-height: 110px; }
+    button { cursor:pointer; background:#1c3250; font-weight:700; }
+    button.primary { background:#d98600; color:#111; border-color:#ffb84d; }
+    button.warn { background:#5a1f1f; border-color:#8f3a3a; }
+    .actions { display:flex; flex-wrap:wrap; gap:10px; }
+    .actions button { width:auto; min-width:150px; }
+    .pill { display:inline-block; padding:8px 12px; border-radius:999px; background:#1a2a41; margin-right:8px; }
+    .muted { color:#b7c8df; font-size:14px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { text-align:left; padding:10px 8px; border-bottom:1px solid #21324c; }
+    h1, h2, h3 { margin-top:0; }
+    .join-url { word-break:break-all; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>Trivia Game — Host</h1>
-    <p class="pill">Dedicated trivia host page scaffold</p>
-    <p>Next step: wire host controls for packs, rounds, timers, TTS, room info, and scoreboard.</p>
+  <div class="wrap">
+    <div class="card">
+      <h1>Trivia Game — Host</h1>
+      <div class="grid">
+        <div><div class="pill">Join code <strong id="joinCode">------</strong></div></div>
+        <div><div class="pill">State <strong id="gameState">idle</strong></div></div>
+        <div><div class="pill">Round <strong id="roundNumber">0</strong></div></div>
+      </div>
+      <p class="join-url muted" id="joinUrl"></p>
+      <p class="muted" id="notice"></p>
+    </div>
+
+    <div class="card">
+      <h2>Room settings</h2>
+      <div class="grid">
+        <label>Answer seconds<input id="answerSeconds" type="number" min="3" max="120" value="20"></label>
+        <label>Reveal seconds<input id="revealSeconds" type="number" min="1" max="60" value="5"></label>
+        <label>Auto next<select id="autoNext"><option value="true">On</option><option value="false">Off</option></select></label>
+      </div>
+      <div class="actions" style="margin-top:12px;"><button id="saveSettings" class="primary">Save settings</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Question editor</h2>
+      <div class="grid">
+        <label style="grid-column:1 / -1;">Question<textarea id="questionText" placeholder="Enter the trivia question..."></textarea></label>
+        <label>Choice A<input id="choice0" type="text"></label>
+        <label>Choice B<input id="choice1" type="text"></label>
+        <label>Choice C<input id="choice2" type="text"></label>
+        <label>Choice D<input id="choice3" type="text"></label>
+        <label>Correct answer<select id="correctIndex"><option value="0">A</option><option value="1">B</option><option value="2">C</option><option value="3">D</option></select></label>
+        <label>Category<input id="category" type="text" placeholder="science, movies, sports..."></label>
+        <label style="grid-column:1 / -1;">Explanation<textarea id="explanation" placeholder="Optional explanation shown after the round..."></textarea></label>
+      </div>
+      <div class="actions" style="margin-top:12px;">
+        <button id="saveQuestion">Save question</button>
+        <button id="startRound" class="primary">Start round</button>
+        <button id="gradeNow">Reveal now</button>
+        <button id="clearRound">Clear round</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Players</h2>
+      <table>
+        <thead><tr><th>Name</th><th>Score</th><th>Answered</th><th></th></tr></thead>
+        <tbody id="playersBody"></tbody>
+      </table>
+      <div class="actions" style="margin-top:12px;"><button id="resetScores" class="warn">Reset scores</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Last result</h2>
+      <div id="lastResult" class="muted">No results yet.</div>
+    </div>
   </div>
+
+  <script>
+    const stateUrl = '/api/trivia_game/state';
+    const hostActionUrl = '/api/trivia_game/host_action';
+    let latestState = null;
+    let socket = null;
+
+    function setNotice(message) {
+      document.getElementById('notice').textContent = message || '';
+    }
+
+    async function fetchState() {
+      const response = await fetch(stateUrl, { cache: 'no-store' });
+      const payload = await response.json();
+      render(payload.state);
+    }
+
+    async function hostAction(action, extra = {}) {
+      setNotice('Working...');
+      const response = await fetch(hostActionUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...extra }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text() || 'Host action failed');
+      }
+      const payload = await response.json();
+      render(payload.state);
+      setNotice('Saved.');
+      window.setTimeout(() => setNotice(''), 1500);
+    }
+
+    function render(state) {
+      latestState = state;
+      document.getElementById('joinCode').textContent = state.join_code || '------';
+      document.getElementById('gameState').textContent = state.state || 'idle';
+      document.getElementById('roundNumber').textContent = String(state.round_number || 0);
+      document.getElementById('joinUrl').textContent = state.join_url || '';
+      document.getElementById('answerSeconds').value = state.answer_seconds ?? 20;
+      document.getElementById('revealSeconds').value = state.reveal_seconds ?? 5;
+      document.getElementById('autoNext').value = String(Boolean(state.auto_next));
+
+      const q = state.question || {};
+      document.getElementById('questionText').value = q.question || '';
+      const choices = Array.isArray(q.choices) ? q.choices : [];
+      for (let i = 0; i < 4; i += 1) document.getElementById(`choice${i}`).value = choices[i] || '';
+      document.getElementById('correctIndex').value = String(q.correct_index ?? 0);
+      document.getElementById('category').value = q.category || '';
+      document.getElementById('explanation').value = q.explanation || '';
+
+      const tbody = document.getElementById('playersBody');
+      tbody.innerHTML = '';
+      const answered = state.current_answers || {};
+      for (const player of (state.players || [])) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${player.name || ''}</td><td>${player.score ?? 0}</td><td>${answered[player.name] !== undefined ? 'Yes' : 'No'}</td><td><button data-remove="${player.name || ''}">Remove</button></td>`;
+        tbody.appendChild(tr);
+      }
+      tbody.querySelectorAll('button[data-remove]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          try { await hostAction('remove_player', { name: button.dataset.remove }); } catch (err) { setNotice(err.message); }
+        });
+      });
+
+      const result = state.last_result || {};
+      const correct = Array.isArray(result.correct_players) ? result.correct_players : [];
+      document.getElementById('lastResult').textContent = result.correct_answer
+        ? `Correct answer: ${result.correct_answer}. ${correct.length ? `Winners: ${correct.join(', ')}.` : 'Nobody got it right.'} ${result.explanation || ''}`.trim()
+        : 'No results yet.';
+    }
+
+    function connectSocket() {
+      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+      socket = new WebSocket(`${protocol}://${location.host}/api/trivia_game/ws`);
+      socket.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.event === 'state') render(payload.state);
+      };
+      socket.onclose = () => window.setTimeout(connectSocket, 1500);
+    }
+
+    document.getElementById('saveSettings').addEventListener('click', async () => {
+      try {
+        await hostAction('set_settings', {
+          answer_seconds: parseInt(document.getElementById('answerSeconds').value || '20', 10),
+          reveal_seconds: parseInt(document.getElementById('revealSeconds').value || '5', 10),
+          auto_next: document.getElementById('autoNext').value === 'true',
+        });
+      } catch (err) { setNotice(err.message); }
+    });
+
+    document.getElementById('saveQuestion').addEventListener('click', async () => {
+      try {
+        await hostAction('set_question', {
+          question: document.getElementById('questionText').value,
+          choices: [0,1,2,3].map((idx) => document.getElementById(`choice${idx}`).value),
+          correct_index: parseInt(document.getElementById('correctIndex').value || '0', 10),
+          category: document.getElementById('category').value,
+          explanation: document.getElementById('explanation').value,
+        });
+      } catch (err) { setNotice(err.message); }
+    });
+
+    document.getElementById('startRound').addEventListener('click', async () => {
+      try { await hostAction('start_round'); } catch (err) { setNotice(err.message); }
+    });
+    document.getElementById('gradeNow').addEventListener('click', async () => {
+      try { await hostAction('grade_round'); } catch (err) { setNotice(err.message); }
+    });
+    document.getElementById('clearRound').addEventListener('click', async () => {
+      try { await hostAction('clear_round'); } catch (err) { setNotice(err.message); }
+    });
+    document.getElementById('resetScores').addEventListener('click', async () => {
+      try { await hostAction('reset_scores'); } catch (err) { setNotice(err.message); }
+    });
+
+    fetchState().catch((err) => setNotice(err.message));
+    connectSocket();
+    setInterval(() => { if (socket && socket.readyState === WebSocket.OPEN) socket.send('ping'); }, 15000);
+  </script>
 </body>
 </html>
