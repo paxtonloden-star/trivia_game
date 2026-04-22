@@ -702,7 +702,7 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self.async_save()
 
     async def async_advance_after_results(self) -> None:
-        self._cancel_round_task()
+        self._round_task = None
         self.current_answers = {}
         self.timer_ends_at = None
         self.last_result = {}
@@ -723,7 +723,8 @@ class TriviaGameCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _cancel_round_task(self) -> None:
         task = self._round_task
-        if task and not task.done():
+        current = asyncio.current_task()
+        if task and task is not current and not task.done():
             task.cancel()
         self._round_task = None
 
