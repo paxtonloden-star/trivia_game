@@ -132,9 +132,31 @@
     const hostActionUrl = '/api/trivia_game/host_action';
     let latestState = null;
     let socket = null;
+    let suspendRenderUntil = 0;
 
     function setNotice(message) {
       document.getElementById('notice').textContent = message || '';
+    }
+
+    function suspendRender(ms = 2000) {
+      suspendRenderUntil = Date.now() + ms;
+    }
+
+    function shouldSkipElementUpdate(el) {
+      if (!el) return true;
+      if (Date.now() < suspendRenderUntil) {
+        const active = document.activeElement;
+        if (active === el) return true;
+        if (el.tagName === 'TEXTAREA') return true;
+        if (el.tagName === 'INPUT' || el.tagName === 'SELECT') return true;
+      }
+      return document.activeElement === el;
+    }
+
+    function safeSetValue(id, value) {
+      const el = document.getElementById(id);
+      if (!el || shouldSkipElementUpdate(el)) return;
+      el.value = value ?? '';
     }
 
     async function fetchState() {
@@ -150,6 +172,7 @@
 
     async function hostAction(action, extra = {}) {
       setNotice('Working...');
+      suspendRender(2500);
       const response = await fetch(hostActionUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -166,6 +189,9 @@
     }
 
     function fillSelect(select, items, selected, placeholder) {
+      const isFocused = document.activeElement === select;
+      const currentValue = select.value;
+      if (Date.now() < suspendRenderUntil && isFocused) return;
       select.innerHTML = '';
       const blank = document.createElement('option');
       blank.value = '';
@@ -177,10 +203,11 @@
         option.textContent = item.name || item.label || item.entity_id || item.value || '';
         select.appendChild(option);
       }
-      if (selected !== undefined) select.value = selected || '';
+      select.value = selected || currentValue || '';
     }
 
     function fillMultiSelect(select, items, selectedValues) {
+      if (Date.now() < suspendRenderUntil && document.activeElement === select) return;
       const selected = new Set(selectedValues || []);
       select.innerHTML = '';
       for (const item of items || []) {
@@ -198,17 +225,18 @@
       const tts = state.tts || {};
       fillSelect(document.getElementById('ttsProvider'), payload.tts_providers || [], tts.provider_entity || '', 'Choose provider...');
       fillMultiSelect(document.getElementById('speakerTargets'), payload.speaker_targets || [], tts.speaker_targets || []);
-      document.getElementById('ttsEnabled').value = String(Boolean(tts.enabled));
-      document.getElementById('ttsLanguage').value = tts.language || 'en-US';
-      document.getElementById('ttsVoice').value = tts.voice || '';
-      document.getElementById('ttsRate').value = tts.speech_rate_wpm ?? 155;
-      document.getElementById('announceQuestion').value = String(tts.announce_question !== false);
-      document.getElementById('announceResult').value = String(tts.announce_result !== false);
-      document.getElementById('startAfterTts').value = String(tts.start_timer_after_tts !== false);
+      safeSetValue('ttsEnabled', String(Boolean(tts.enabled)));
+      safeSetValue('ttsLanguage', tts.language || 'en-US');
+      safeSetValue('ttsVoice', tts.voice || '');
+      safeSetValue('ttsRate', tts.speech_rate_wpm ?? 155);
+      safeSetValue('announceQuestion', String(tts.announce_question !== false));
+      safeSetValue('announceResult', String(tts.announce_result !== false));
+      safeSetValue('startAfterTts', String(tts.start_timer_after_tts !== false));
     }
 
     function renderPackOptions(state) {
       const select = document.getElementById('packSelect');
+      if (Date.now() < suspendRenderUntil && document.activeElement === select) return;
       const packs = Array.isArray(state.custom_packs) ? state.custom_packs : [];
       const current = select.value;
       select.innerHTML = '';
@@ -249,17 +277,17 @@
       document.getElementById('roundNumber').textContent = String(state.round_number || 0);
       document.getElementById('queueCount').textContent = String(state.queue_count || 0);
       document.getElementById('joinUrl').textContent = state.join_url || '';
-      document.getElementById('answerSeconds').value = state.answer_seconds ?? 20;
-      document.getElementById('revealSeconds').value = state.reveal_seconds ?? 5;
-      document.getElementById('autoNext').value = String(Boolean(state.auto_next));
+      safeSetValue('answerSeconds', state.answer_seconds ?? 20);
+      safeSetValue('revealSeconds', state.reveal_seconds ?? 5);
+      safeSetValue('autoNext', String(Boolean(state.auto_next)));
 
       const q = state.question || {};
-      document.getElementById('questionText').value = q.question || '';
+      safeSetValue('questionText', q.question || '');
       const choices = Array.isArray(q.choices) ? q.choices : [];
-      for (let i = 0; i < 4; i += 1) document.getElementById(`choice${i}`).value = choices[i] || '';
-      document.getElementById('correctIndex').value = String(q.correct_index ?? 0);
-      document.getElementById('category').value = q.category || '';
-      document.getElementById('explanation').value = q.explanation || '';
+      for (let i = 0; i < 4; i += 1) safeSetValue(`choice${i}`, choices[i] || '');
+      safeSetValue('correctIndex', String(q.correct_index ?? 0));
+      safeSetValue('category', q.category || '');
+      safeSetValue('explanation', q.explanation || '');
 
       renderPackOptions(state);
       renderQueue(state);
@@ -304,6 +332,9 @@
         explanation: document.getElementById('explanation').value,
       };
     }
+
+    document.addEventListener('input', () => suspendRender(1800), true);
+    document.addEventListener('focusin', () => suspendRender(1800), true);
 
     document.getElementById('saveSettings').addEventListener('click', async () => {
       try {
