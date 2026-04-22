@@ -52,6 +52,22 @@
     </div>
 
     <div class="card">
+      <h2>TTS & speakers</h2>
+      <div class="grid">
+        <label>TTS enabled<select id="ttsEnabled"><option value="true">On</option><option value="false">Off</option></select></label>
+        <label>TTS provider<select id="ttsProvider"></select></label>
+        <label>Speaker targets<select id="speakerTargets" multiple size="5"></select></label>
+        <label>Language<input id="ttsLanguage" type="text" placeholder="en-US"></label>
+        <label>Voice<input id="ttsVoice" type="text" placeholder="optional voice name"></label>
+        <label>Speech rate WPM<input id="ttsRate" type="number" min="80" max="260" value="155"></label>
+        <label>Announce question<select id="announceQuestion"><option value="true">Yes</option><option value="false">No</option></select></label>
+        <label>Announce result<select id="announceResult"><option value="true">Yes</option><option value="false">No</option></select></label>
+        <label>Start timer after TTS<select id="startAfterTts"><option value="true">Yes</option><option value="false">No</option></select></label>
+      </div>
+      <div class="actions" style="margin-top:12px;"><button id="saveTts">Save TTS settings</button></div>
+    </div>
+
+    <div class="card">
       <h2>Question editor</h2>
       <div class="grid">
         <label style="grid-column:1 / -1;">Question<textarea id="questionText" placeholder="Enter the trivia question..."></textarea></label>
@@ -112,6 +128,7 @@
 
   <script>
     const stateUrl = '/api/trivia_game/state';
+    const bootstrapUrl = '/api/trivia_game/bootstrap';
     const hostActionUrl = '/api/trivia_game/host_action';
     let latestState = null;
     let socket = null;
@@ -126,6 +143,11 @@
       render(payload.state);
     }
 
+    async function fetchBootstrap() {
+      const response = await fetch(bootstrapUrl, { cache: 'no-store' });
+      return response.json();
+    }
+
     async function hostAction(action, extra = {}) {
       setNotice('Working...');
       const response = await fetch(hostActionUrl, {
@@ -138,8 +160,51 @@
       }
       const payload = await response.json();
       render(payload.state);
+      await refreshAudioControls();
       setNotice('Saved.');
       window.setTimeout(() => setNotice(''), 1500);
+    }
+
+    function fillSelect(select, items, selected, placeholder) {
+      select.innerHTML = '';
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = placeholder;
+      select.appendChild(blank);
+      for (const item of items || []) {
+        const option = document.createElement('option');
+        option.value = item.entity_id || item.value || '';
+        option.textContent = item.name || item.label || item.entity_id || item.value || '';
+        select.appendChild(option);
+      }
+      if (selected !== undefined) select.value = selected || '';
+    }
+
+    function fillMultiSelect(select, items, selectedValues) {
+      const selected = new Set(selectedValues || []);
+      select.innerHTML = '';
+      for (const item of items || []) {
+        const option = document.createElement('option');
+        option.value = item.entity_id || '';
+        option.textContent = item.name || item.entity_id || '';
+        option.selected = selected.has(option.value);
+        select.appendChild(option);
+      }
+    }
+
+    async function refreshAudioControls() {
+      const payload = await fetchBootstrap();
+      const state = payload.state || latestState || {};
+      const tts = state.tts || {};
+      fillSelect(document.getElementById('ttsProvider'), payload.tts_providers || [], tts.provider_entity || '', 'Choose provider...');
+      fillMultiSelect(document.getElementById('speakerTargets'), payload.speaker_targets || [], tts.speaker_targets || []);
+      document.getElementById('ttsEnabled').value = String(Boolean(tts.enabled));
+      document.getElementById('ttsLanguage').value = tts.language || 'en-US';
+      document.getElementById('ttsVoice').value = tts.voice || '';
+      document.getElementById('ttsRate').value = tts.speech_rate_wpm ?? 155;
+      document.getElementById('announceQuestion').value = String(tts.announce_question !== false);
+      document.getElementById('announceResult').value = String(tts.announce_result !== false);
+      document.getElementById('startAfterTts').value = String(tts.start_timer_after_tts !== false);
     }
 
     function renderPackOptions(state) {
@@ -250,6 +315,23 @@
       } catch (err) { setNotice(err.message); }
     });
 
+    document.getElementById('saveTts').addEventListener('click', async () => {
+      try {
+        const selectedSpeakers = Array.from(document.getElementById('speakerTargets').selectedOptions).map((option) => option.value);
+        await hostAction('set_tts_settings', {
+          enabled: document.getElementById('ttsEnabled').value === 'true',
+          provider_entity: document.getElementById('ttsProvider').value,
+          speaker_targets: selectedSpeakers,
+          language: document.getElementById('ttsLanguage').value,
+          voice: document.getElementById('ttsVoice').value,
+          announce_question: document.getElementById('announceQuestion').value === 'true',
+          announce_result: document.getElementById('announceResult').value === 'true',
+          start_timer_after_tts: document.getElementById('startAfterTts').value === 'true',
+          speech_rate_wpm: parseInt(document.getElementById('ttsRate').value || '155', 10),
+        });
+      } catch (err) { setNotice(err.message); }
+    });
+
     document.getElementById('saveQuestion').addEventListener('click', async () => {
       try { await hostAction('set_question', currentQuestionPayload()); } catch (err) { setNotice(err.message); }
     });
@@ -291,7 +373,7 @@
       try { await hostAction('reset_scores'); } catch (err) { setNotice(err.message); }
     });
 
-    fetchState().catch((err) => setNotice(err.message));
+    fetchState().then(refreshAudioControls).catch((err) => setNotice(err.message));
     connectSocket();
     setInterval(() => { if (socket && socket.readyState === WebSocket.OPEN) socket.send('ping'); }, 15000);
   </script>

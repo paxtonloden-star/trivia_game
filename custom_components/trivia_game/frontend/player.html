@@ -29,7 +29,14 @@
       padding: 24px;
     }
     h1 { text-align:center; color:#ffd76d; font-size: clamp(32px, 6vw, 70px); margin:0 0 20px; text-transform:uppercase; }
-    .topbar { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+    .topbar { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:16px; }
+    .player-pill { display:flex; align-items:center; gap:12px; padding:8px 14px; border-radius:999px; background:#1a2a41; font-weight:700; }
+    .avatar {
+      width:56px; height:56px; border-radius:999px; overflow:hidden; background:linear-gradient(180deg,#ffb84d,#d96e00);
+      display:grid; place-items:center; color:#111; font-size:20px; font-weight:900; flex:0 0 auto;
+      border:2px solid rgba(255,214,95,.88);
+    }
+    .avatar img { width:100%; height:100%; object-fit:cover; display:block; }
     .pill { display:inline-flex; gap:8px; align-items:center; padding:10px 14px; border-radius:999px; background:#1a2a41; font-weight:700; }
     .question {
       background: linear-gradient(180deg, #f7e6bf 0%, #f3dba9 100%);
@@ -74,6 +81,7 @@
     .notice { margin-top:12px; color:#d7e4f5; }
     .hidden { display:none !important; }
     .result { margin-top:16px; padding:14px 16px; border-radius:16px; background:#11233b; }
+    .category { text-transform: uppercase; letter-spacing: .08em; color:#ffe49b; font-size:14px; margin-bottom:10px; text-align:center; }
     @media (max-width: 780px) { .answers { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -81,6 +89,7 @@
   <div id="joinCard" class="join-card hidden">
     <h2>Join Trivia Game</h2>
     <input id="playerNameInput" type="text" placeholder="Enter your player name" />
+    <input id="pictureInput" type="text" placeholder="Optional picture URL" />
     <button id="joinBtn">Join game</button>
     <div id="joinNotice" class="notice"></div>
   </div>
@@ -88,11 +97,15 @@
   <div id="board" class="board hidden">
     <h1>Trivia Mode</h1>
     <div class="topbar">
-      <div class="pill">Player <strong id="playerNameLabel">Player</strong></div>
+      <div class="player-pill">
+        <div class="avatar" id="avatarBox">P</div>
+        <div>Player <strong id="playerNameLabel">Player</strong></div>
+      </div>
       <div class="pill">Score <strong id="playerScore">0</strong></div>
       <div class="pill">State <strong id="gameState">idle</strong></div>
       <div class="pill">Time <strong id="timerText">--</strong></div>
     </div>
+    <div id="questionCategory" class="category"></div>
     <div id="questionText" class="question">Waiting for the host…</div>
     <div id="answers" class="answers"></div>
     <div id="resultBox" class="result hidden"></div>
@@ -104,15 +117,31 @@
     const submitUrl = '/api/trivia_game/submit_answer';
     const params = new URLSearchParams(location.search);
     let playerName = (params.get('name') || localStorage.getItem('trivia_game_player_name') || '').trim();
+    let playerPicture = (params.get('picture') || localStorage.getItem('trivia_game_player_picture') || '').trim();
     let latestState = null;
     let timerLoop = null;
     let socket = null;
+
+    function initials(name) {
+      return (name || 'P').split(/\s+/).slice(0, 2).map((part) => (part[0] || '')).join('').toUpperCase() || 'P';
+    }
+
+    function renderAvatar(player) {
+      const box = document.getElementById('avatarBox');
+      const picture = (player?.picture || playerPicture || '').trim();
+      if (picture) {
+        box.innerHTML = `<img src="${picture}" alt="Player avatar">`;
+      } else {
+        box.textContent = initials(player?.name || playerName);
+      }
+    }
 
     function showJoin(message = '') {
       document.getElementById('joinCard').classList.remove('hidden');
       document.getElementById('board').classList.add('hidden');
       document.getElementById('joinNotice').textContent = message;
       document.getElementById('playerNameInput').value = playerName;
+      document.getElementById('pictureInput').value = playerPicture;
     }
 
     function showBoard() {
@@ -129,7 +158,9 @@
 
     async function joinGame() {
       const input = document.getElementById('playerNameInput');
+      const pictureInput = document.getElementById('pictureInput');
       playerName = (input.value || '').trim();
+      playerPicture = (pictureInput.value || '').trim();
       if (!playerName) {
         showJoin('Player name is required.');
         return;
@@ -137,13 +168,14 @@
       const response = await fetch(joinUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: playerName }),
+        body: JSON.stringify({ name: playerName, picture: playerPicture }),
       });
       if (!response.ok) {
         showJoin(await response.text() || 'Unable to join game.');
         return;
       }
       localStorage.setItem('trivia_game_player_name', playerName);
+      localStorage.setItem('trivia_game_player_picture', playerPicture);
       const payload = await response.json();
       render(payload.state);
     }
@@ -204,10 +236,12 @@
         return;
       }
       showBoard();
-      const me = state.players.find((player) => (player.name || '').trim() === playerName) || { score: 0 };
+      const me = state.players.find((player) => (player.name || '').trim() === playerName) || { score: 0, picture: '' };
+      renderAvatar(me);
       document.getElementById('playerScore').textContent = String(me.score ?? 0);
       document.getElementById('gameState').textContent = state.state || 'idle';
       document.getElementById('questionText').textContent = state.question?.question || 'Waiting for the host…';
+      document.getElementById('questionCategory').textContent = state.question?.category || '';
       renderAnswers(state);
       renderResult(state);
     }
@@ -234,6 +268,7 @@
 
     document.getElementById('joinBtn').addEventListener('click', () => joinGame().catch((err) => showJoin(err.message)));
     document.getElementById('playerNameInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') joinGame().catch((err) => showJoin(err.message)); });
+    document.getElementById('pictureInput').addEventListener('keydown', (event) => { if (event.key === 'Enter') joinGame().catch((err) => showJoin(err.message)); });
 
     fetchState().catch(() => showJoin('Unable to load room state.'));
     connectSocket();
