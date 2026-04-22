@@ -92,7 +92,10 @@
         <label>Announce question<select id="announceQuestion"><option value="true">Yes</option><option value="false">No</option></select></label>
         <label>Announce result<select id="announceResult"><option value="true">Yes</option><option value="false">No</option></select></label>
         <label>Start timer after TTS<select id="startAfterTts"><option value="true">Yes</option><option value="false">No</option></select></label>
+        <label>Use conversation agent<select id="useConversationAgent"><option value="false">No</option><option value="true">Yes</option></select></label>
+        <label>Conversation agent<select id="conversationAgent"></select></label>
       </div>
+      <div class="helper">When enabled, the selected conversation agent rewrites the spoken line before it is sent to TTS.</div>
       <div class="actions" style="margin-top:12px;"><button id="saveTts">Save TTS settings</button></div>
     </div>
 
@@ -164,43 +167,17 @@
     let socket = null;
     const dirtyFields = new Set();
 
-    function setNotice(message) {
-      document.getElementById('notice').textContent = message || '';
-    }
-
-    function setDirtyNote() {
-      const note = document.getElementById('dirtyNote');
-      note.textContent = dirtyFields.size ? 'Unsaved edits are being preserved while live updates continue.' : '';
-    }
-
-    function markDirty(id) {
-      dirtyFields.add(id);
-      setDirtyNote();
-    }
-
-    function clearDirty(ids) {
-      ids.forEach((id) => dirtyFields.delete(id));
-      setDirtyNote();
-    }
-
-    function shouldSkip(id) {
-      const el = document.getElementById(id);
-      return dirtyFields.has(id) || document.activeElement === el;
-    }
-
-    function safeSetValue(id, value) {
-      const el = document.getElementById(id);
-      if (!el || shouldSkip(id)) return;
-      el.value = value ?? '';
-    }
+    function setNotice(message) { document.getElementById('notice').textContent = message || ''; }
+    function setDirtyNote() { document.getElementById('dirtyNote').textContent = dirtyFields.size ? 'Unsaved edits are being preserved while live updates continue.' : ''; }
+    function markDirty(id) { dirtyFields.add(id); setDirtyNote(); }
+    function clearDirty(ids) { ids.forEach((id) => dirtyFields.delete(id)); setDirtyNote(); }
+    function shouldSkip(id) { const el = document.getElementById(id); return dirtyFields.has(id) || document.activeElement === el; }
+    function safeSetValue(id, value) { const el = document.getElementById(id); if (!el || shouldSkip(id)) return; el.value = value ?? ''; }
 
     function fillSelect(select, items, selected, placeholder) {
       if (shouldSkip(select.id)) return;
       select.innerHTML = '';
-      const blank = document.createElement('option');
-      blank.value = '';
-      blank.textContent = placeholder;
-      select.appendChild(blank);
+      const blank = document.createElement('option'); blank.value = ''; blank.textContent = placeholder; select.appendChild(blank);
       for (const item of items || []) {
         const option = document.createElement('option');
         option.value = item.entity_id || item.value || '';
@@ -214,15 +191,9 @@
       const select = document.getElementById(selectId);
       if (!select || shouldSkip(selectId)) return;
       select.innerHTML = '';
-      const blank = document.createElement('option');
-      blank.value = '';
-      blank.textContent = placeholder;
-      select.appendChild(blank);
+      const blank = document.createElement('option'); blank.value = ''; blank.textContent = placeholder; select.appendChild(blank);
       for (const item of items || []) {
-        const option = document.createElement('option');
-        option.value = item.value || '';
-        option.textContent = item.label || item.value || '';
-        select.appendChild(option);
+        const option = document.createElement('option'); option.value = item.value || ''; option.textContent = item.label || item.value || ''; select.appendChild(option);
       }
       select.value = selected || '';
     }
@@ -240,36 +211,17 @@
       }
     }
 
-    function selectedValues(selectId) {
-      return Array.from(document.getElementById(selectId).selectedOptions).map((option) => option.value).filter(Boolean);
-    }
+    function selectedValues(selectId) { return Array.from(document.getElementById(selectId).selectedOptions).map((option) => option.value).filter(Boolean); }
 
-    async function fetchState() {
-      const response = await fetch(stateUrl, { cache: 'no-store' });
-      const payload = await response.json();
-      render(payload.state);
-    }
-
-    async function fetchBootstrap() {
-      const response = await fetch(bootstrapUrl, { cache: 'no-store' });
-      return response.json();
-    }
+    async function fetchState() { const response = await fetch(stateUrl, { cache: 'no-store' }); const payload = await response.json(); render(payload.state); }
+    async function fetchBootstrap() { const response = await fetch(bootstrapUrl, { cache: 'no-store' }); return response.json(); }
 
     async function hostAction(action, extra = {}) {
       setNotice('Working...');
-      const response = await fetch(hostActionUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, ...extra }),
-      });
-      if (!response.ok) {
-        throw new Error(await response.text() || 'Host action failed');
-      }
+      const response = await fetch(hostActionUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, ...extra }) });
+      if (!response.ok) throw new Error(await response.text() || 'Host action failed');
       const payload = await response.json();
-      render(payload.state);
-      await refreshAudioControls();
-      setNotice('Saved.');
-      window.setTimeout(() => setNotice(''), 1800);
+      render(payload.state); await refreshAudioControls(); setNotice('Saved.'); window.setTimeout(() => setNotice(''), 1800);
     }
 
     async function refreshAudioControls() {
@@ -278,6 +230,7 @@
       const tts = state.tts || {};
       fillSelect(document.getElementById('ttsProvider'), payload.tts_providers || [], tts.provider_entity || '', 'Choose provider...');
       fillMultiSelect(document.getElementById('speakerTargets'), payload.speaker_targets || [], tts.speaker_targets || []);
+      fillSelect(document.getElementById('conversationAgent'), payload.conversation_agents || [], tts.conversation_agent_id || '', 'Choose conversation agent...');
       safeSetValue('ttsEnabled', String(Boolean(tts.enabled)));
       safeSetValue('ttsLanguage', tts.language || 'en-US');
       safeSetValue('ttsVoice', tts.voice || '');
@@ -285,72 +238,37 @@
       safeSetValue('announceQuestion', String(tts.announce_question !== false));
       safeSetValue('announceResult', String(tts.announce_result !== false));
       safeSetValue('startAfterTts', String(tts.start_timer_after_tts !== false));
+      safeSetValue('useConversationAgent', String(Boolean(tts.use_conversation_agent)));
+      safeSetValue('conversationAgent', tts.conversation_agent_id || '');
     }
 
     function renderAiControls(ai) {
       fillSimpleSelect('aiProvider', ai.provider_options || [], ai.provider || 'openai', 'Choose provider...');
       fillSimpleSelect('aiAgeRange', (ai.age_options || []).map((value) => ({ value, label: value })), ai.default_age_range || 'teen', 'Choose age...');
       fillMultiSelect(document.getElementById('aiCategories'), (ai.category_options || []).map((value) => ({ value, label: value })), ai.default_categories || []);
-      safeSetValue('aiEndpoint', ai.endpoint || '');
-      safeSetValue('aiModel', ai.model || '');
-      safeSetValue('aiAgeRange', ai.default_age_range || 'teen');
-      safeSetValue('aiQuestionCount', ai.default_question_count ?? 10);
-      safeSetValue('aiIncludePackCategories', String(ai.include_pack_categories !== false));
-      if (!dirtyFields.has('aiApiKey')) {
-        document.getElementById('aiApiKey').value = '';
-      }
-      const apiKeyStatus = document.getElementById('aiApiKeyStatus');
-      apiKeyStatus.textContent = ai.has_api_key ? 'Stored' : 'Not set';
+      safeSetValue('aiEndpoint', ai.endpoint || ''); safeSetValue('aiModel', ai.model || ''); safeSetValue('aiAgeRange', ai.default_age_range || 'teen'); safeSetValue('aiQuestionCount', ai.default_question_count ?? 10); safeSetValue('aiIncludePackCategories', String(ai.include_pack_categories !== false));
+      if (!dirtyFields.has('aiApiKey')) document.getElementById('aiApiKey').value = '';
+      document.getElementById('aiApiKeyStatus').textContent = ai.has_api_key ? 'Stored' : 'Not set';
       document.getElementById('aiGenerationStatus').textContent = ai.generation_in_progress ? 'Generation in progress… please wait.' : '';
       document.getElementById('generateAiPack').disabled = !!ai.generation_in_progress;
       const errorBox = document.getElementById('aiErrorBox');
-      if (ai.last_error) {
-        errorBox.style.display = 'block';
-        errorBox.textContent = ai.last_error;
-      } else {
-        errorBox.style.display = 'none';
-        errorBox.textContent = '';
-      }
+      if (ai.last_error) { errorBox.style.display = 'block'; errorBox.textContent = ai.last_error; } else { errorBox.style.display = 'none'; errorBox.textContent = ''; }
       const last = ai.last_generation;
-      document.getElementById('lastGenerationSummary').textContent = last
-        ? `Last generated: ${last.pack_name || last.pack_slug} • ${last.question_count} questions • ${Array.isArray(last.categories) ? last.categories.join(', ') : ''} • ${last.age_range || ''}`
-        : '';
+      document.getElementById('lastGenerationSummary').textContent = last ? `Last generated: ${last.pack_name || last.pack_slug} • ${last.question_count} questions • ${Array.isArray(last.categories) ? last.categories.join(', ') : ''} • ${last.age_range || ''}` : '';
     }
 
     function renderPackOptions(state) {
-      const select = document.getElementById('packSelect');
-      if (shouldSkip('packSelect')) return;
-      const packs = Array.isArray(state.custom_packs) ? state.custom_packs : [];
-      const current = select.value;
-      select.innerHTML = '';
-      const blank = document.createElement('option');
-      blank.value = '';
-      blank.textContent = packs.length ? 'Choose a pack...' : 'No packs imported';
-      select.appendChild(blank);
-      for (const pack of packs) {
-        const option = document.createElement('option');
-        option.value = pack.slug || '';
-        option.textContent = `${pack.name || pack.slug} (${pack.question_count || 0})`;
-        select.appendChild(option);
-      }
+      const select = document.getElementById('packSelect'); if (shouldSkip('packSelect')) return;
+      const packs = Array.isArray(state.custom_packs) ? state.custom_packs : []; const current = select.value; select.innerHTML = '';
+      const blank = document.createElement('option'); blank.value = ''; blank.textContent = packs.length ? 'Choose a pack...' : 'No packs imported'; select.appendChild(blank);
+      for (const pack of packs) { const option = document.createElement('option'); option.value = pack.slug || ''; option.textContent = `${pack.name || pack.slug} (${pack.question_count || 0})`; select.appendChild(option); }
       if (packs.some((pack) => pack.slug === current)) select.value = current;
     }
 
     function renderQueue(state) {
-      const queueList = document.getElementById('queueList');
-      queueList.innerHTML = '';
-      const queue = Array.isArray(state.question_queue) ? state.question_queue : [];
-      if (!queue.length) {
-        const li = document.createElement('li');
-        li.textContent = 'No queued questions.';
-        queueList.appendChild(li);
-        return;
-      }
-      for (const item of queue) {
-        const li = document.createElement('li');
-        li.textContent = `${item.question || 'Untitled question'}${item.category ? ` — ${item.category}` : ''}`;
-        queueList.appendChild(li);
-      }
+      const queueList = document.getElementById('queueList'); queueList.innerHTML = ''; const queue = Array.isArray(state.question_queue) ? state.question_queue : [];
+      if (!queue.length) { const li = document.createElement('li'); li.textContent = 'No queued questions.'; queueList.appendChild(li); return; }
+      for (const item of queue) { const li = document.createElement('li'); li.textContent = `${item.question || 'Untitled question'}${item.category ? ` — ${item.category}` : ''}`; queueList.appendChild(li); }
     }
 
     function render(state) {
@@ -360,173 +278,71 @@
       document.getElementById('roundNumber').textContent = String(state.round_number || 0);
       document.getElementById('queueCount').textContent = String(state.queue_count || 0);
       document.getElementById('joinUrl').textContent = state.join_url || '';
-      safeSetValue('answerSeconds', state.answer_seconds ?? 20);
-      safeSetValue('revealSeconds', state.reveal_seconds ?? 5);
-      safeSetValue('autoNext', String(Boolean(state.auto_next)));
-
+      safeSetValue('answerSeconds', state.answer_seconds ?? 20); safeSetValue('revealSeconds', state.reveal_seconds ?? 5); safeSetValue('autoNext', String(Boolean(state.auto_next)));
       renderAiControls(state.ai || {});
-
-      const q = state.question || {};
-      safeSetValue('questionText', q.question || '');
-      const choices = Array.isArray(q.choices) ? q.choices : [];
+      const q = state.question || {}; safeSetValue('questionText', q.question || ''); const choices = Array.isArray(q.choices) ? q.choices : [];
       for (let i = 0; i < 4; i += 1) safeSetValue(`choice${i}`, choices[i] || '');
-      safeSetValue('correctIndex', String(q.correct_index ?? 0));
-      safeSetValue('category', q.category || '');
-      safeSetValue('explanation', q.explanation || '');
-
-      renderPackOptions(state);
-      renderQueue(state);
-
-      const tbody = document.getElementById('playersBody');
-      tbody.innerHTML = '';
-      const answered = state.current_answers || {};
+      safeSetValue('correctIndex', String(q.correct_index ?? 0)); safeSetValue('category', q.category || ''); safeSetValue('explanation', q.explanation || '');
+      renderPackOptions(state); renderQueue(state);
+      const tbody = document.getElementById('playersBody'); tbody.innerHTML = ''; const answered = state.current_answers || {};
       for (const player of (state.players || [])) {
         const tr = document.createElement('tr');
         tr.innerHTML = `<td>${player.name || ''}</td><td>${player.score ?? 0}</td><td>${answered[player.name] !== undefined ? 'Yes' : 'No'}</td><td><button data-remove="${player.name || ''}">Remove</button></td>`;
         tbody.appendChild(tr);
       }
-      tbody.querySelectorAll('button[data-remove]').forEach((button) => {
-        button.addEventListener('click', async () => {
-          try { await hostAction('remove_player', { name: button.dataset.remove }); } catch (err) { setNotice(err.message); }
-        });
-      });
-
-      const result = state.last_result || {};
-      const correct = Array.isArray(result.correct_players) ? result.correct_players : [];
-      document.getElementById('lastResult').textContent = result.correct_answer
-        ? `Correct answer: ${result.correct_answer}. ${correct.length ? `Winners: ${correct.join(', ')}.` : 'Nobody got it right.'} ${result.explanation || ''}`.trim()
-        : 'No results yet.';
+      tbody.querySelectorAll('button[data-remove]').forEach((button) => button.addEventListener('click', async () => { try { await hostAction('remove_player', { name: button.dataset.remove }); } catch (err) { setNotice(err.message); } }));
+      const result = state.last_result || {}; const correct = Array.isArray(result.correct_players) ? result.correct_players : [];
+      document.getElementById('lastResult').textContent = result.correct_answer ? `Correct answer: ${result.correct_answer}. ${correct.length ? `Winners: ${correct.join(', ')}.` : 'Nobody got it right.'} ${result.explanation || ''}`.trim() : 'No results yet.';
     }
 
     function connectSocket() {
-      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-      socket = new WebSocket(`${protocol}://${location.host}/api/trivia_game/ws`);
-      socket.onmessage = (event) => {
-        const payload = JSON.parse(event.data);
-        if (payload.event === 'state') render(payload.state);
-      };
+      const protocol = location.protocol === 'https:' ? 'wss' : 'ws'; socket = new WebSocket(`${protocol}://${location.host}/api/trivia_game/ws`);
+      socket.onmessage = (event) => { const payload = JSON.parse(event.data); if (payload.event === 'state') render(payload.state); };
       socket.onclose = () => window.setTimeout(connectSocket, 1500);
     }
 
     function currentQuestionPayload() {
-      return {
-        question: document.getElementById('questionText').value,
-        choices: [0,1,2,3].map((idx) => document.getElementById(`choice${idx}`).value),
-        correct_index: parseInt(document.getElementById('correctIndex').value || '0', 10),
-        category: document.getElementById('category').value,
-        explanation: document.getElementById('explanation').value,
-      };
+      return { question: document.getElementById('questionText').value, choices: [0,1,2,3].map((idx) => document.getElementById(`choice${idx}`).value), correct_index: parseInt(document.getElementById('correctIndex').value || '0', 10), category: document.getElementById('category').value, explanation: document.getElementById('explanation').value };
     }
 
-    ['answerSeconds','revealSeconds','autoNext','aiProvider','aiEndpoint','aiModel','aiApiKey','aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiIncludePackCategories','aiCategories','ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation','packJson','packSelect','packCount','replaceQueue'].forEach((id) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.addEventListener('input', () => markDirty(id));
-      el.addEventListener('change', () => markDirty(id));
+    ['answerSeconds','revealSeconds','autoNext','aiProvider','aiEndpoint','aiModel','aiApiKey','aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiIncludePackCategories','aiCategories','ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent','questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation','packJson','packSelect','packCount','replaceQueue'].forEach((id) => {
+      const el = document.getElementById(id); if (!el) return; el.addEventListener('input', () => markDirty(id)); el.addEventListener('change', () => markDirty(id));
     });
 
-    document.getElementById('saveSettings').addEventListener('click', async () => {
-      try {
-        await hostAction('set_settings', {
-          answer_seconds: parseInt(document.getElementById('answerSeconds').value || '20', 10),
-          reveal_seconds: parseInt(document.getElementById('revealSeconds').value || '5', 10),
-          auto_next: document.getElementById('autoNext').value === 'true',
-        });
-        clearDirty(['answerSeconds','revealSeconds','autoNext']);
-      } catch (err) { setNotice(err.message); }
-    });
+    document.getElementById('saveSettings').addEventListener('click', async () => { try { await hostAction('set_settings', { answer_seconds: parseInt(document.getElementById('answerSeconds').value || '20', 10), reveal_seconds: parseInt(document.getElementById('revealSeconds').value || '5', 10), auto_next: document.getElementById('autoNext').value === 'true' }); clearDirty(['answerSeconds','revealSeconds','autoNext']); } catch (err) { setNotice(err.message); } });
 
-    document.getElementById('saveAiSettings').addEventListener('click', async () => {
-      try {
-        await hostAction('set_ai_settings', {
-          provider: document.getElementById('aiProvider').value,
-          endpoint: document.getElementById('aiEndpoint').value,
-          model: document.getElementById('aiModel').value,
-          api_key: document.getElementById('aiApiKey').value,
-          default_categories: selectedValues('aiCategories'),
-          default_age_range: document.getElementById('aiAgeRange').value,
-          default_question_count: parseInt(document.getElementById('aiQuestionCount').value || '10', 10),
-          include_pack_categories: document.getElementById('aiIncludePackCategories').value === 'true',
-        });
-        clearDirty(['aiProvider','aiEndpoint','aiModel','aiApiKey','aiAgeRange','aiQuestionCount','aiIncludePackCategories','aiCategories']);
-      } catch (err) { setNotice(err.message); }
-    });
+    document.getElementById('saveAiSettings').addEventListener('click', async () => { try { await hostAction('set_ai_settings', { provider: document.getElementById('aiProvider').value, endpoint: document.getElementById('aiEndpoint').value, model: document.getElementById('aiModel').value, api_key: document.getElementById('aiApiKey').value, default_categories: selectedValues('aiCategories'), default_age_range: document.getElementById('aiAgeRange').value, default_question_count: parseInt(document.getElementById('aiQuestionCount').value || '10', 10), include_pack_categories: document.getElementById('aiIncludePackCategories').value === 'true' }); clearDirty(['aiProvider','aiEndpoint','aiModel','aiApiKey','aiAgeRange','aiQuestionCount','aiIncludePackCategories','aiCategories']); } catch (err) { setNotice(err.message); } });
 
-    document.getElementById('generateAiPack').addEventListener('click', async () => {
-      try {
-        const selectedCats = selectedValues('aiCategories');
-        await hostAction('generate_ai_pack', {
-          name: document.getElementById('aiPackName').value,
-          categories: selectedCats,
-          age_range: document.getElementById('aiAgeRange').value,
-          question_count: parseInt(document.getElementById('aiQuestionCount').value || '10', 10),
-          queue_after_generate: document.getElementById('aiQueueAfterGenerate').value === 'true',
-        });
-        clearDirty(['aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiCategories']);
-        setNotice('AI pack generated.');
-      } catch (err) { setNotice(err.message); }
-    });
+    document.getElementById('generateAiPack').addEventListener('click', async () => { try { await hostAction('generate_ai_pack', { name: document.getElementById('aiPackName').value, categories: selectedValues('aiCategories'), age_range: document.getElementById('aiAgeRange').value, question_count: parseInt(document.getElementById('aiQuestionCount').value || '10', 10), queue_after_generate: document.getElementById('aiQueueAfterGenerate').value === 'true' }); clearDirty(['aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiCategories']); setNotice('AI pack generated.'); } catch (err) { setNotice(err.message); } });
 
     document.getElementById('saveTts').addEventListener('click', async () => {
       try {
-        const selectedSpeakers = Array.from(document.getElementById('speakerTargets').selectedOptions).map((option) => option.value);
         await hostAction('set_tts_settings', {
           enabled: document.getElementById('ttsEnabled').value === 'true',
           provider_entity: document.getElementById('ttsProvider').value,
-          speaker_targets: selectedSpeakers,
+          speaker_targets: Array.from(document.getElementById('speakerTargets').selectedOptions).map((option) => option.value),
           language: document.getElementById('ttsLanguage').value,
           voice: document.getElementById('ttsVoice').value,
           announce_question: document.getElementById('announceQuestion').value === 'true',
           announce_result: document.getElementById('announceResult').value === 'true',
           start_timer_after_tts: document.getElementById('startAfterTts').value === 'true',
           speech_rate_wpm: parseInt(document.getElementById('ttsRate').value || '155', 10),
+          use_conversation_agent: document.getElementById('useConversationAgent').value === 'true',
+          conversation_agent_id: document.getElementById('conversationAgent').value,
         });
-        clearDirty(['ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts']);
+        clearDirty(['ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent']);
       } catch (err) { setNotice(err.message); }
     });
 
-    document.getElementById('saveQuestion').addEventListener('click', async () => {
-      try { await hostAction('set_question', currentQuestionPayload()); clearDirty(['questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation']); } catch (err) { setNotice(err.message); }
-    });
-
-    document.getElementById('queueQuestion').addEventListener('click', async () => {
-      try { await hostAction('queue_question', currentQuestionPayload()); clearDirty(['questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation']); } catch (err) { setNotice(err.message); }
-    });
-
-    document.getElementById('importPack').addEventListener('click', async () => {
-      try {
-        const payload = JSON.parse(document.getElementById('packJson').value || '{}');
-        await hostAction('import_pack', payload);
-        clearDirty(['packJson']);
-      } catch (err) { setNotice(err.message); }
-    });
-
-    document.getElementById('loadPackToQueue').addEventListener('click', async () => {
-      try {
-        await hostAction('load_pack_to_queue', {
-          slug: document.getElementById('packSelect').value,
-          count: parseInt(document.getElementById('packCount').value || '10', 10),
-          replace_queue: document.getElementById('replaceQueue').value === 'true',
-        });
-        clearDirty(['packSelect','packCount','replaceQueue']);
-      } catch (err) { setNotice(err.message); }
-    });
-
-    document.getElementById('startRound').addEventListener('click', async () => {
-      try { await hostAction('start_round'); } catch (err) { setNotice(err.message); }
-    });
-    document.getElementById('nextQuestion').addEventListener('click', async () => {
-      try { await hostAction('next_question'); } catch (err) { setNotice(err.message); }
-    });
-    document.getElementById('gradeNow').addEventListener('click', async () => {
-      try { await hostAction('grade_round'); } catch (err) { setNotice(err.message); }
-    });
-    document.getElementById('clearRound').addEventListener('click', async () => {
-      try { await hostAction('clear_round'); } catch (err) { setNotice(err.message); }
-    });
-    document.getElementById('resetScores').addEventListener('click', async () => {
-      try { await hostAction('reset_scores'); } catch (err) { setNotice(err.message); }
-    });
+    document.getElementById('saveQuestion').addEventListener('click', async () => { try { await hostAction('set_question', currentQuestionPayload()); clearDirty(['questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation']); } catch (err) { setNotice(err.message); } });
+    document.getElementById('queueQuestion').addEventListener('click', async () => { try { await hostAction('queue_question', currentQuestionPayload()); clearDirty(['questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation']); } catch (err) { setNotice(err.message); } });
+    document.getElementById('importPack').addEventListener('click', async () => { try { const payload = JSON.parse(document.getElementById('packJson').value || '{}'); await hostAction('import_pack', payload); clearDirty(['packJson']); } catch (err) { setNotice(err.message); } });
+    document.getElementById('loadPackToQueue').addEventListener('click', async () => { try { await hostAction('load_pack_to_queue', { slug: document.getElementById('packSelect').value, count: parseInt(document.getElementById('packCount').value || '10', 10), replace_queue: document.getElementById('replaceQueue').value === 'true' }); clearDirty(['packSelect','packCount','replaceQueue']); } catch (err) { setNotice(err.message); } });
+    document.getElementById('startRound').addEventListener('click', async () => { try { await hostAction('start_round'); } catch (err) { setNotice(err.message); } });
+    document.getElementById('nextQuestion').addEventListener('click', async () => { try { await hostAction('next_question'); } catch (err) { setNotice(err.message); } });
+    document.getElementById('gradeNow').addEventListener('click', async () => { try { await hostAction('grade_round'); } catch (err) { setNotice(err.message); } });
+    document.getElementById('clearRound').addEventListener('click', async () => { try { await hostAction('clear_round'); } catch (err) { setNotice(err.message); } });
+    document.getElementById('resetScores').addEventListener('click', async () => { try { await hostAction('reset_scores'); } catch (err) { setNotice(err.message); } });
 
     fetchState().then(refreshAudioControls).catch((err) => setNotice(err.message));
     connectSocket();
