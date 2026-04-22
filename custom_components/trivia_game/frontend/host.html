@@ -51,6 +51,21 @@
     </div>
 
     <div class="card">
+      <h2>Game controls</h2>
+      <div class="grid">
+        <label>Rounds this game<input id="maxRounds" type="number" min="1" max="100" value="10"></label>
+        <label>Current game round<input id="currentGameRound" type="text" disabled></label>
+      </div>
+      <div class="actions" style="margin-top:12px;">
+        <button id="startGame" class="primary">Start game</button>
+        <button id="pauseGame">Pause</button>
+        <button id="resumeGame">Resume</button>
+        <button id="endGame">End game</button>
+        <button id="resetGame" class="warn">Reset game</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Room settings</h2>
       <div class="grid">
         <label>Answer seconds<input id="answerSeconds" type="number" min="3" max="120" value="20"></label>
@@ -100,6 +115,7 @@
         <label>Speech rate WPM<input id="ttsRate" type="number" min="80" max="260" value="155"></label>
         <label>Announce question<select id="announceQuestion"><option value="true">Yes</option><option value="false">No</option></select></label>
         <label>Announce result<select id="announceResult"><option value="true">Yes</option><option value="false">No</option></select></label>
+        <label>Announce final scores<select id="announceScores"><option value="true">Yes</option><option value="false">No</option></select></label>
         <label>Start timer after TTS<select id="startAfterTts"><option value="true">Yes</option><option value="false">No</option></select></label>
         <label>Use conversation agent<select id="useConversationAgent"><option value="false">No</option><option value="true">Yes</option></select></label>
         <label>Conversation agent<select id="conversationAgent"></select></label>
@@ -283,6 +299,7 @@
       safeSetValue('ttsRate', tts.speech_rate_wpm ?? 155);
       safeSetValue('announceQuestion', String(tts.announce_question !== false));
       safeSetValue('announceResult', String(tts.announce_result !== false));
+      safeSetValue('announceScores', String(tts.announce_scores !== false));
       safeSetValue('startAfterTts', String(tts.start_timer_after_tts !== false));
       safeSetValue('useConversationAgent', String(Boolean(tts.use_conversation_agent)));
       safeSetValue('conversationAgent', tts.conversation_agent_id || '');
@@ -325,7 +342,7 @@
       document.getElementById('roundNumber').textContent = String(state.round_number || 0);
       document.getElementById('queueCount').textContent = String(state.queue_count || 0);
       document.getElementById('joinUrl').textContent = state.join_url || '';
-      safeSetValue('answerSeconds', state.answer_seconds ?? 20); safeSetValue('revealSeconds', state.reveal_seconds ?? 5); safeSetValue('autoNext', String(Boolean(state.auto_next)));
+      safeSetValue('answerSeconds', state.answer_seconds ?? 20); safeSetValue('revealSeconds', state.reveal_seconds ?? 5); safeSetValue('autoNext', String(Boolean(state.auto_next))); safeSetValue('maxRounds', state.max_rounds ?? 10); safeSetValue('currentGameRound', state.current_game_round ?? 0);
       renderAiControls(state.ai || {});
       renderCustomCategories(state);
       const q = state.question || {}; safeSetValue('questionText', q.question || ''); const choices = Array.isArray(q.choices) ? q.choices : [];
@@ -340,7 +357,11 @@
       }
       tbody.querySelectorAll('button[data-remove]').forEach((button) => button.addEventListener('click', async () => { try { await hostAction('remove_player', { name: button.dataset.remove }); } catch (err) { setNotice(err.message); } }));
       const result = state.last_result || {}; const correct = Array.isArray(result.correct_players) ? result.correct_players : [];
-      document.getElementById('lastResult').textContent = result.correct_answer ? `Correct answer: ${result.correct_answer}. ${correct.length ? `Winners: ${correct.join(', ')}.` : 'Nobody got it right.'} ${result.explanation || ''}`.trim() : 'No results yet.';
+      if (Array.isArray(result.final_scores) && result.final_scores.length) {
+        document.getElementById('lastResult').textContent = `Final scores: ${result.final_scores.map((row) => `${row.name} ${row.score}`).join(', ')}`;
+      } else {
+        document.getElementById('lastResult').textContent = result.correct_answer ? `Correct answer: ${result.correct_answer}. ${correct.length ? `Winners: ${correct.join(', ')}.` : 'Nobody got it right.'} ${result.explanation || ''}`.trim() : 'No results yet.';
+      }
     }
 
     function connectSocket() {
@@ -353,15 +374,20 @@
       return { question: document.getElementById('questionText').value, choices: [0,1,2,3].map((idx) => document.getElementById(`choice${idx}`).value), correct_index: parseInt(document.getElementById('correctIndex').value || '0', 10), category: document.getElementById('category').value, explanation: document.getElementById('explanation').value };
     }
 
-    ['answerSeconds','revealSeconds','autoNext','aiProvider','aiEndpoint','aiModel','aiApiKey','aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiIncludePackCategories','aiCategories','ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent','conversationStylePrompt','questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation','packJson','packSelect','packCount','replaceQueue','customCategoryInput'].forEach((id) => {
+    ['answerSeconds','revealSeconds','autoNext','maxRounds','aiProvider','aiEndpoint','aiModel','aiApiKey','aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiIncludePackCategories','aiCategories','ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','announceScores','startAfterTts','useConversationAgent','conversationAgent','conversationStylePrompt','questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation','packJson','packSelect','packCount','replaceQueue','customCategoryInput'].forEach((id) => {
       const el = document.getElementById(id); if (!el) return; el.addEventListener('input', () => markDirty(id)); el.addEventListener('change', () => markDirty(id));
     });
 
-    document.getElementById('saveSettings').addEventListener('click', async () => { try { await hostAction('set_settings', { answer_seconds: parseInt(document.getElementById('answerSeconds').value || '20', 10), reveal_seconds: parseInt(document.getElementById('revealSeconds').value || '5', 10), auto_next: document.getElementById('autoNext').value === 'true' }); clearDirty(['answerSeconds','revealSeconds','autoNext']); } catch (err) { setNotice(err.message); } });
+    document.getElementById('saveSettings').addEventListener('click', async () => { try { await hostAction('set_settings', { answer_seconds: parseInt(document.getElementById('answerSeconds').value || '20', 10), reveal_seconds: parseInt(document.getElementById('revealSeconds').value || '5', 10), auto_next: document.getElementById('autoNext').value === 'true', max_rounds: parseInt(document.getElementById('maxRounds').value || '10', 10) }); clearDirty(['answerSeconds','revealSeconds','autoNext','maxRounds']); } catch (err) { setNotice(err.message); } });
+    document.getElementById('startGame').addEventListener('click', async () => { try { await hostAction('start_game'); } catch (err) { setNotice(err.message); } });
+    document.getElementById('pauseGame').addEventListener('click', async () => { try { await hostAction('pause_game'); } catch (err) { setNotice(err.message); } });
+    document.getElementById('resumeGame').addEventListener('click', async () => { try { await hostAction('resume_game'); } catch (err) { setNotice(err.message); } });
+    document.getElementById('endGame').addEventListener('click', async () => { try { await hostAction('end_game'); } catch (err) { setNotice(err.message); } });
+    document.getElementById('resetGame').addEventListener('click', async () => { try { await hostAction('reset_game'); } catch (err) { setNotice(err.message); } });
     document.getElementById('saveAiSettings').addEventListener('click', async () => { try { await hostAction('set_ai_settings', { provider: document.getElementById('aiProvider').value, endpoint: document.getElementById('aiEndpoint').value, model: document.getElementById('aiModel').value, api_key: document.getElementById('aiApiKey').value, default_categories: selectedValues('aiCategories'), default_age_range: document.getElementById('aiAgeRange').value, default_question_count: parseInt(document.getElementById('aiQuestionCount').value || '10', 10), include_pack_categories: document.getElementById('aiIncludePackCategories').value === 'true' }); clearDirty(['aiProvider','aiEndpoint','aiModel','aiApiKey','aiAgeRange','aiQuestionCount','aiIncludePackCategories','aiCategories']); } catch (err) { setNotice(err.message); } });
     document.getElementById('generateAiPack').addEventListener('click', async () => { try { await hostAction('generate_ai_pack', { name: document.getElementById('aiPackName').value, categories: selectedValues('aiCategories'), age_range: document.getElementById('aiAgeRange').value, question_count: parseInt(document.getElementById('aiQuestionCount').value || '10', 10), queue_after_generate: document.getElementById('aiQueueAfterGenerate').value === 'true' }); clearDirty(['aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiCategories']); setNotice('AI pack generated.'); } catch (err) { setNotice(err.message); } });
     document.getElementById('addCustomCategory').addEventListener('click', async () => { try { await hostAction('add_custom_category', { category: document.getElementById('customCategoryInput').value }); document.getElementById('customCategoryInput').value = ''; clearDirty(['customCategoryInput']); } catch (err) { setNotice(err.message); } });
-    document.getElementById('saveTts').addEventListener('click', async () => { try { await hostAction('set_tts_settings', { enabled: document.getElementById('ttsEnabled').value === 'true', provider_entity: document.getElementById('ttsProvider').value, speaker_targets: Array.from(document.getElementById('speakerTargets').selectedOptions).map((option) => option.value), language: document.getElementById('ttsLanguage').value, voice: document.getElementById('ttsVoice').value, announce_question: document.getElementById('announceQuestion').value === 'true', announce_result: document.getElementById('announceResult').value === 'true', start_timer_after_tts: document.getElementById('startAfterTts').value === 'true', speech_rate_wpm: parseInt(document.getElementById('ttsRate').value || '155', 10), use_conversation_agent: document.getElementById('useConversationAgent').value === 'true', conversation_agent_id: document.getElementById('conversationAgent').value, conversation_style_prompt: document.getElementById('conversationStylePrompt').value, }); clearDirty(['ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','useConversationAgent','conversationAgent','conversationStylePrompt']); } catch (err) { setNotice(err.message); } });
+    document.getElementById('saveTts').addEventListener('click', async () => { try { await hostAction('set_tts_settings', { enabled: document.getElementById('ttsEnabled').value === 'true', provider_entity: document.getElementById('ttsProvider').value, speaker_targets: Array.from(document.getElementById('speakerTargets').selectedOptions).map((option) => option.value), language: document.getElementById('ttsLanguage').value, voice: document.getElementById('ttsVoice').value, announce_question: document.getElementById('announceQuestion').value === 'true', announce_result: document.getElementById('announceResult').value === 'true', announce_scores: document.getElementById('announceScores').value === 'true', start_timer_after_tts: document.getElementById('startAfterTts').value === 'true', speech_rate_wpm: parseInt(document.getElementById('ttsRate').value || '155', 10), use_conversation_agent: document.getElementById('useConversationAgent').value === 'true', conversation_agent_id: document.getElementById('conversationAgent').value, conversation_style_prompt: document.getElementById('conversationStylePrompt').value, }); clearDirty(['ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','announceScores','startAfterTts','useConversationAgent','conversationAgent','conversationStylePrompt']); } catch (err) { setNotice(err.message); } });
     document.getElementById('saveQuestion').addEventListener('click', async () => { try { await hostAction('set_question', currentQuestionPayload()); clearDirty(['questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation']); } catch (err) { setNotice(err.message); } });
     document.getElementById('queueQuestion').addEventListener('click', async () => { try { await hostAction('queue_question', currentQuestionPayload()); clearDirty(['questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation']); } catch (err) { setNotice(err.message); } });
     document.getElementById('importPack').addEventListener('click', async () => { try { const payload = JSON.parse(document.getElementById('packJson').value || '{}'); await hostAction('import_pack', payload); clearDirty(['packJson']); } catch (err) { setNotice(err.message); } });
