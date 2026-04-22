@@ -26,6 +26,8 @@
     .queue-list { margin:0; padding-left:18px; }
     .queue-list li { margin:6px 0; }
     .dirty-note { color:#ffcf70; font-size:12px; margin-top:8px; }
+    .helper { font-size:12px; color:#a9bddb; margin-top:6px; }
+    .status-chip { display:inline-block; padding:6px 10px; border-radius:999px; background:#17304d; color:#dcecff; font-size:12px; }
   </style>
 </head>
 <body>
@@ -50,6 +52,27 @@
         <label>Auto next<select id="autoNext"><option value="true">On</option><option value="false">Off</option></select></label>
       </div>
       <div class="actions" style="margin-top:12px;"><button id="saveSettings" class="primary">Save settings</button></div>
+    </div>
+
+    <div class="card">
+      <h2>AI pack generator</h2>
+      <div class="grid">
+        <label>Provider<select id="aiProvider"></select></label>
+        <label>Endpoint<input id="aiEndpoint" type="text" placeholder="https://api.openai.com/v1"></label>
+        <label>Model<input id="aiModel" type="text" placeholder="gpt-4o-mini"></label>
+        <label>API key<input id="aiApiKey" type="password" placeholder="Paste API key"></label>
+        <label>Pack name<input id="aiPackName" type="text" placeholder="Teen Science Mix"></label>
+        <label>Age range<select id="aiAgeRange"></select></label>
+        <label>Question count<input id="aiQuestionCount" type="number" min="1" max="100" value="10"></label>
+        <label>Queue after generate<select id="aiQueueAfterGenerate"><option value="true">Yes</option><option value="false">No</option></select></label>
+        <label>Categories<select id="aiCategories" multiple size="8"></select><div class="helper">Select one or more. When multiple are selected, each generated question randomly uses one selected category.</div></label>
+      </div>
+      <div class="helper">Current API key status: <span id="aiApiKeyStatus" class="status-chip">Not set</span></div>
+      <div class="helper" id="lastGenerationSummary"></div>
+      <div class="actions" style="margin-top:12px;">
+        <button id="saveAiSettings">Save AI settings</button>
+        <button id="generateAiPack" class="primary">Generate AI pack</button>
+      </div>
     </div>
 
     <div class="card">
@@ -166,6 +189,56 @@
       el.value = value ?? '';
     }
 
+    function fillSelect(select, items, selected, placeholder) {
+      if (shouldSkip(select.id)) return;
+      select.innerHTML = '';
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = placeholder;
+      select.appendChild(blank);
+      for (const item of items || []) {
+        const option = document.createElement('option');
+        option.value = item.entity_id || item.value || '';
+        option.textContent = item.name || item.label || item.entity_id || item.value || '';
+        select.appendChild(option);
+      }
+      select.value = selected || '';
+    }
+
+    function fillSimpleSelect(selectId, items, selected, placeholder = 'Choose...') {
+      const select = document.getElementById(selectId);
+      if (!select || shouldSkip(selectId)) return;
+      select.innerHTML = '';
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = placeholder;
+      select.appendChild(blank);
+      for (const item of items || []) {
+        const option = document.createElement('option');
+        option.value = item.value || '';
+        option.textContent = item.label || item.value || '';
+        select.appendChild(option);
+      }
+      select.value = selected || '';
+    }
+
+    function fillMultiSelect(select, items, selectedValues) {
+      if (shouldSkip(select.id)) return;
+      const selected = new Set(selectedValues || []);
+      select.innerHTML = '';
+      for (const item of items || []) {
+        const option = document.createElement('option');
+        option.value = item.entity_id || item.value || item;
+        option.textContent = item.name || item.label || item.entity_id || item.value || item;
+        option.selected = selected.has(option.value);
+        select.appendChild(option);
+      }
+    }
+
+    function selectedValues(selectId) {
+      return Array.from(document.getElementById(selectId).selectedOptions).map((option) => option.value).filter(Boolean);
+    }
+
     async function fetchState() {
       const response = await fetch(stateUrl, { cache: 'no-store' });
       const payload = await response.json();
@@ -191,36 +264,7 @@
       render(payload.state);
       await refreshAudioControls();
       setNotice('Saved.');
-      window.setTimeout(() => setNotice(''), 1500);
-    }
-
-    function fillSelect(select, items, selected, placeholder) {
-      if (shouldSkip(select.id)) return;
-      select.innerHTML = '';
-      const blank = document.createElement('option');
-      blank.value = '';
-      blank.textContent = placeholder;
-      select.appendChild(blank);
-      for (const item of items || []) {
-        const option = document.createElement('option');
-        option.value = item.entity_id || item.value || '';
-        option.textContent = item.name || item.label || item.entity_id || item.value || '';
-        select.appendChild(option);
-      }
-      select.value = selected || '';
-    }
-
-    function fillMultiSelect(select, items, selectedValues) {
-      if (shouldSkip(select.id)) return;
-      const selected = new Set(selectedValues || []);
-      select.innerHTML = '';
-      for (const item of items || []) {
-        const option = document.createElement('option');
-        option.value = item.entity_id || '';
-        option.textContent = item.name || item.entity_id || '';
-        option.selected = selected.has(option.value);
-        select.appendChild(option);
-      }
+      window.setTimeout(() => setNotice(''), 1800);
     }
 
     async function refreshAudioControls() {
@@ -236,6 +280,25 @@
       safeSetValue('announceQuestion', String(tts.announce_question !== false));
       safeSetValue('announceResult', String(tts.announce_result !== false));
       safeSetValue('startAfterTts', String(tts.start_timer_after_tts !== false));
+    }
+
+    function renderAiControls(ai) {
+      fillSimpleSelect('aiProvider', ai.provider_options || [], ai.provider || 'openai', 'Choose provider...');
+      fillSimpleSelect('aiAgeRange', (ai.age_options || []).map((value) => ({ value, label: value })), ai.default_age_range || 'teen', 'Choose age...');
+      fillMultiSelect(document.getElementById('aiCategories'), (ai.category_options || []).map((value) => ({ value, label: value })), ai.default_categories || []);
+      safeSetValue('aiEndpoint', ai.endpoint || '');
+      safeSetValue('aiModel', ai.model || '');
+      if (!dirtyFields.has('aiApiKey')) {
+        document.getElementById('aiApiKey').value = '';
+      }
+      safeSetValue('aiAgeRange', ai.default_age_range || 'teen');
+      safeSetValue('aiQuestionCount', ai.default_question_count ?? 10);
+      const apiKeyStatus = document.getElementById('aiApiKeyStatus');
+      apiKeyStatus.textContent = ai.has_api_key ? 'Stored' : 'Not set';
+      const last = ai.last_generation;
+      document.getElementById('lastGenerationSummary').textContent = last
+        ? `Last generated: ${last.pack_name || last.pack_slug} • ${last.question_count} questions • ${Array.isArray(last.categories) ? last.categories.join(', ') : ''} • ${last.age_range || ''}`
+        : '';
     }
 
     function renderPackOptions(state) {
@@ -284,6 +347,8 @@
       safeSetValue('answerSeconds', state.answer_seconds ?? 20);
       safeSetValue('revealSeconds', state.reveal_seconds ?? 5);
       safeSetValue('autoNext', String(Boolean(state.auto_next)));
+
+      renderAiControls(state.ai || {});
 
       const q = state.question || {};
       safeSetValue('questionText', q.question || '');
@@ -337,7 +402,7 @@
       };
     }
 
-    ['answerSeconds','revealSeconds','autoNext','ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation','packJson','packSelect','packCount','replaceQueue'].forEach((id) => {
+    ['answerSeconds','revealSeconds','autoNext','aiProvider','aiEndpoint','aiModel','aiApiKey','aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiCategories','ttsEnabled','ttsProvider','speakerTargets','ttsLanguage','ttsVoice','ttsRate','announceQuestion','announceResult','startAfterTts','questionText','choice0','choice1','choice2','choice3','correctIndex','category','explanation','packJson','packSelect','packCount','replaceQueue'].forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
       el.addEventListener('input', () => markDirty(id));
@@ -352,6 +417,36 @@
           auto_next: document.getElementById('autoNext').value === 'true',
         });
         clearDirty(['answerSeconds','revealSeconds','autoNext']);
+      } catch (err) { setNotice(err.message); }
+    });
+
+    document.getElementById('saveAiSettings').addEventListener('click', async () => {
+      try {
+        await hostAction('set_ai_settings', {
+          provider: document.getElementById('aiProvider').value,
+          endpoint: document.getElementById('aiEndpoint').value,
+          model: document.getElementById('aiModel').value,
+          api_key: document.getElementById('aiApiKey').value,
+          default_categories: selectedValues('aiCategories'),
+          default_age_range: document.getElementById('aiAgeRange').value,
+          default_question_count: parseInt(document.getElementById('aiQuestionCount').value || '10', 10),
+        });
+        clearDirty(['aiProvider','aiEndpoint','aiModel','aiApiKey','aiAgeRange','aiQuestionCount','aiCategories']);
+      } catch (err) { setNotice(err.message); }
+    });
+
+    document.getElementById('generateAiPack').addEventListener('click', async () => {
+      try {
+        const selectedCats = selectedValues('aiCategories');
+        await hostAction('generate_ai_pack', {
+          name: document.getElementById('aiPackName').value,
+          categories: selectedCats,
+          age_range: document.getElementById('aiAgeRange').value,
+          question_count: parseInt(document.getElementById('aiQuestionCount').value || '10', 10),
+          queue_after_generate: document.getElementById('aiQueueAfterGenerate').value === 'true',
+        });
+        clearDirty(['aiPackName','aiAgeRange','aiQuestionCount','aiQueueAfterGenerate','aiCategories']);
+        setNotice('AI pack generated.');
       } catch (err) { setNotice(err.message); }
     });
 
