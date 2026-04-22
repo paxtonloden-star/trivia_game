@@ -138,6 +138,7 @@ class TriviaHostActionView(BaseTriviaView):
                 default_categories=payload.get("default_categories"),
                 default_age_range=payload.get("default_age_range"),
                 default_question_count=payload.get("default_question_count"),
+                include_pack_categories=payload.get("include_pack_categories"),
             )
         elif action == "generate_ai_pack":
             await self.coordinator.async_generate_ai_pack(
